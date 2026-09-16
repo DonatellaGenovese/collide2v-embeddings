@@ -24,7 +24,7 @@ matplotlib
 ipykernel
 plotly
 nbformat
-sqlalchemy<2.0  # avoid v2 due to incompatibility with optuna
+sqlalchemy<3.0  # avoid v2 due to incompatibility with optuna
 optuna-dashboard==0.14.0
 
 # --------- others --------- #
