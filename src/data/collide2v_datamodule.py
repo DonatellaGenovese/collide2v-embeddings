@@ -205,15 +205,20 @@ class COLLIDE2VDataModule(LightningDataModule):
             self.folder,
         ):
             print(f"🟡 Preprocessed data found — using from {self.paths['eos_preproc_dir']}")
+            # One seed per split, so that the events chosen for `val` are not the
+            # same rows, of the same shards, as those chosen for `train`.
             self.trainstream = LocalVectorDataset(os.path.join(self.paths["eos_preproc_dir"], "train"),
                                                   per_class_limit=self.train_val_test_split_per_class[0],
-                                                  shuffle_file_order=True, classnames=self.classnames, folder_map=self.folder)
+                                                  shuffle_file_order=True, classnames=self.classnames,
+                                                  folder_map=self.folder, seed=self.seed)
             self.valstream = LocalVectorDataset(os.path.join(self.paths["eos_preproc_dir"], "val"),
                                                 per_class_limit=self.train_val_test_split_per_class[1],
-                                                shuffle_file_order=False, classnames=self.classnames, folder_map=self.folder)
+                                                shuffle_file_order=False, classnames=self.classnames,
+                                                folder_map=self.folder, seed=self.seed + 1)
             self.teststream = LocalVectorDataset(os.path.join(self.paths["eos_preproc_dir"], "test"),
                                                  per_class_limit=self.train_val_test_split_per_class[2],
-                                                 shuffle_file_order=False, classnames=self.classnames, folder_map=self.folder)
+                                                 shuffle_file_order=False, classnames=self.classnames,
+                                                 folder_map=self.folder, seed=self.seed + 2)
         else:
             raise RuntimeError(
                 f"❌ Preprocessed data not found in {self.paths['eos_preproc_dir']} or not enough files present.\n"
@@ -221,8 +226,8 @@ class COLLIDE2VDataModule(LightningDataModule):
                 f"to generate normalized .npy files before training."
             )
 
-        self.shuffled_train = ShuffleBuffer(self.trainstream, buffer_size=100000)
-        self.shuffled_val = ShuffleBuffer(self.valstream, buffer_size=100000)
+        self.shuffled_train = ShuffleBuffer(self.trainstream, buffer_size=100000, seed=self.seed)
+        self.shuffled_val = ShuffleBuffer(self.valstream, buffer_size=100000, seed=self.seed + 1)
 
     def train_dataloader(self) -> DataLoader[Any]:
         """Create and return the train dataloader.

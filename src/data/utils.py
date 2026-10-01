@@ -13,7 +13,6 @@ import pyarrow.parquet as pq
 import torch
 from omegaconf import OmegaConf
 
-from .datasets import LocalVectorDataset
 
 # ============================================================
 # CONFIG DERIVED UTILITIES
