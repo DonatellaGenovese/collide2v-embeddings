@@ -1,5 +1,5 @@
+import hashlib
 import json
-import math
 import os
 import random
 import shutil
@@ -199,26 +199,80 @@ def load_global_filelist() -> dict:
     print(f"🟢 Loaded global file list ({sum(len(v) for v in data.values())} files) from {base_path}")
     return data
 
-def make_split_manifest(global_filelist, split_counts, include_folders, seed=42):
+def class_seed(folder: str, seed: int) -> int:
+    """Seed for one class, derived from its folder name and the global seed.
+
+    Each class draws from its own generator so that the files chosen for one
+    class do not depend on which other classes are in the config: a single
+    shared generator advances once per class, so adding or removing one shifts
+    the draw of every class after it.
+
+    `hashlib`, not the built-in `hash()`, because Python salts the hash of a
+    string per process, which would make the manifest differ between runs.
+    """
+    digest = hashlib.blake2b(f"{seed}:{folder}".encode(), digest_size=8).digest()
+    return int.from_bytes(digest, "big")
+
+
+MANIFEST_STRATEGIES = ("per_class", "legacy")
+
+
+def make_split_manifest(
+    global_filelist, split_counts, include_folders, seed=42, strategy="per_class"
+):
     """
     Absolute target rows per class: greedily assign whole files until
     each split reaches its target in `split_counts` (within one file).
     Extra files are ignored once test target is met.
+
+    `strategy` picks how the files of a class are drawn:
+
+    "per_class" (default)
+        One generator per class, seeded from the class name through
+        `class_seed`, over the file names in sorted order. The files of a class
+        then depend only on that class, the seed and the targets, so a class can
+        be added to or removed from `to_classify` without changing the others.
+
+    "legacy"
+        What the repository did before: a single generator for every class, used
+        in the order the classes appear in the config, over the file names in the
+        order the event-count JSON happens to list them. Reproduces datasets
+        built with that code; do not use it for new ones. Adding or removing a
+        class here changes the files of every class drawn after it.
     """
     import numpy as np
 
-    rng = np.random.default_rng(seed)
+    if strategy not in MANIFEST_STRATEGIES:
+        raise ValueError(
+            f"Unknown manifest strategy {strategy!r}; expected one of {MANIFEST_STRATEGIES}."
+        )
+
     split_names = ["train", "val", "test"]
     targets_abs = np.array(split_counts, dtype=int)  # e.g., [50000, 20000, 20000]
 
+    if strategy == "legacy":
+        print("⚠️  Building the split manifest with the legacy shared generator: "
+              "the files of one class depend on which other classes are selected.")
+        shared_rng = np.random.default_rng(seed)
+
     manifest = {}
     for folder in include_folders:
-        items = [(fn, int(n)) for fn, n in global_filelist.get(folder, {}).items()]
+        if strategy == "legacy":
+            items = [(fn, int(n)) for fn, n in global_filelist.get(folder, {}).items()]
+        else:
+            # Sorted, so the order does not depend on how the event-count JSON
+            # happens to be written; the shuffle below is what randomises it.
+            items = sorted((fn, int(n)) for fn, n in global_filelist.get(folder, {}).items())
+
         if not items:
             manifest[folder] = {s: [] for s in split_names}
             continue
 
-        rng.shuffle(items)
+        if strategy == "legacy":
+            shared_rng.shuffle(items)
+        else:
+            rng = np.random.default_rng(class_seed(folder, seed))
+            items = [items[i] for i in rng.permutation(len(items))]
 
         buckets = {s: [] for s in split_names}
         split_idx = 0
@@ -246,6 +300,168 @@ def make_split_manifest(global_filelist, split_counts, include_folders, seed=42)
 
     return manifest
 
+
+# ============================================================
+# READING, WRITING AND CHECKING THE SPLIT MANIFEST
+# ============================================================
+
+MANIFEST_NAME = "split_manifest.json"
+MANIFEST_META_KEY = "_meta"
+SPLIT_NAMES = ("train", "val", "test")
+
+
+def split_manifest_meta(seed: int, strategy: str, split_counts) -> dict:
+    """What the manifest records about how it was built, so it can be checked."""
+    return {
+        "seed": int(seed),
+        "manifest_strategy": str(strategy),
+        "split_counts": [int(n) for n in split_counts],
+    }
+
+
+def save_split_manifest(path: str, manifest: dict, meta: dict) -> None:
+    """Write the manifest with its metadata under the reserved `_meta` key."""
+    with open(path, "w") as f:
+        json.dump({MANIFEST_META_KEY: meta, **manifest}, f, indent=2)
+
+
+def load_split_manifest(path: str) -> tuple[dict, dict | None]:
+    """Return (folders, meta). `meta` is None for a manifest written before it existed."""
+    with open(path) as f:
+        payload = json.load(f)
+    meta = payload.get(MANIFEST_META_KEY)
+    folders = {k: v for k, v in payload.items() if k != MANIFEST_META_KEY}
+    return folders, meta
+
+
+def check_manifest_meta(meta: dict | None, expected: dict, path: str) -> None:
+    """Refuse to extend a dataset whose manifest was built with other settings.
+
+    Vectorized and preprocessed shards only mean something together with the
+    manifest that chose them, so a run that would add files drawn differently
+    stops here instead of leaving two selections mixed in one directory.
+    """
+    if meta is None:
+        print(
+            f"⚠️  {path} carries no metadata: it was written before the manifest "
+            "recorded how it was built, so the seed and the strategy cannot be "
+            "checked. It is used as it is."
+        )
+        return
+
+    differences = [
+        f"  {key}: manifest has {meta.get(key)!r}, this run asks for {value!r}"
+        for key, value in expected.items()
+        if meta.get(key) != value
+    ]
+    if differences:
+        raise ValueError(
+            f"The existing manifest {path} does not match this configuration:\n"
+            + "\n".join(differences)
+            + "\nThe shards next to it were chosen with the settings the manifest "
+            "records. Either restore those settings, or give this dataset a new "
+            "`data.label` so the new selection gets its own directory."
+        )
+
+
+def check_shards_match_manifest(eos_vec_dir: str, manifest: dict, strict: bool | None = None) -> None:
+    """Every shard already on disk must be a file the manifest selected.
+
+    Catches the case this is really here for: a dataset vectorized with one
+    selection, then extended with another, which leaves a directory holding two
+    samples with no error anywhere.
+
+    `strict` defaults to whether the stored manifest records how it was built.
+    Datasets produced before it did are only warned about: they predate the rule,
+    and some of them do hold shards their manifest no longer lists.
+    """
+    if strict is None:
+        stored = os.path.join(eos_vec_dir, MANIFEST_NAME)
+        strict = True
+        if os.path.exists(stored):
+            _, meta = load_split_manifest(stored)
+            strict = meta is not None
+
+    for split in SPLIT_NAMES:
+        for folder, buckets in manifest.items():
+            split_dir = os.path.join(eos_vec_dir, split, folder)
+            if not os.path.isdir(split_dir):
+                continue
+            selected = {fn.replace(".parquet", "_x.npy") for fn in buckets.get(split, [])}
+            found = {f for f in os.listdir(split_dir) if f.endswith("_x.npy")}
+            unexpected = sorted(found - selected)
+            if not unexpected:
+                continue
+
+            shown = ", ".join(unexpected[:5])
+            more = f" and {len(unexpected) - 5} more" if len(unexpected) > 5 else ""
+            message = (
+                f"{split_dir} holds {len(unexpected)} shard(s) the manifest does not "
+                f"select: {shown}{more}.\nThey come from a different file selection. "
+                "Vectorize into a new `data.label`, or remove them, rather than "
+                "mixing two samples in one directory."
+            )
+            if strict:
+                raise ValueError(message)
+            print(f"⚠️  {message}")
+
+
+def resolve_split_manifest(
+    manifest_path: str,
+    include_folders: list,
+    split_counts,
+    seed: int = 42,
+    strategy: str = "per_class",
+    global_filelist: dict | None = None,
+) -> dict:
+    """The one way a manifest is obtained: reuse the stored one, or build it.
+
+    Reusing it is what keeps a dataset stable, so an existing manifest is never
+    rewritten; it is only extended, and only with classes it does not yet cover,
+    which `per_class` allows without touching the classes already there.
+    """
+    expected = split_manifest_meta(seed, strategy, split_counts)
+
+    if os.path.exists(manifest_path):
+        manifest, meta = load_split_manifest(manifest_path)
+        print(f"🟡 Using existing split manifest: {manifest_path}")
+        check_manifest_meta(meta, expected, manifest_path)
+    else:
+        manifest, meta = {}, None
+
+    missing = [f for f in include_folders if f not in manifest]
+    if missing:
+        if manifest:
+            if strategy != "per_class":
+                raise ValueError(
+                    f"{manifest_path} does not cover {missing}, and strategy "
+                    f"{strategy!r} draws every class from one generator, so adding a "
+                    "class would change the files of the others. Use a new "
+                    "`data.label` for this selection."
+                )
+            print(f"🟢 Extending the manifest with {len(missing)} new class(es): {missing}")
+        else:
+            print(f"🟢 Building a new split manifest for {len(missing)} class(es) ...")
+        for folder in missing:
+            print(f"   • {folder}")
+
+        if global_filelist is None:
+            global_filelist = load_global_filelist()
+        manifest.update(
+            make_split_manifest(
+                global_filelist=global_filelist,
+                split_counts=split_counts,
+                include_folders=missing,
+                seed=seed,
+                strategy=strategy,
+            )
+        )
+        save_split_manifest(manifest_path, manifest, expected)
+        print(f"✅ Wrote split manifest → {manifest_path}")
+
+    return manifest
+
+
 # ============================================================
 # VECTORIZE AND SAVE LOCALLY
 # ============================================================
@@ -265,12 +481,15 @@ def vectorize_to_local(
     read_batch_size: int = 512,
     split_manifest: dict | None = None,
     parallel_processing: bool = False,
+    seed: int = 42,
+    manifest_strategy: str = "per_class",
 ):
     """Vectorize Parquet shards using a deterministic split manifest.
 
     If `split_manifest_path` is given, it defines which files belong
     to train/val/test. Otherwise, the manifest is created or reused
-    in `eos_vec_dir/split_manifest.json`.
+    in `eos_vec_dir/split_manifest.json`, with `seed` and `manifest_strategy`
+    deciding which files each class contributes (see `make_split_manifest`).
 
     Each file in the manifest is converted into .npy shards under:
         eos_vec_dir/{train,val,test}/{class_folder}/...
@@ -284,30 +503,18 @@ def vectorize_to_local(
     # Load or create manifest
     # -------------------------------------------------------------------------
     if split_manifest is not None:
+        # A subset handed over by a batch job: the full manifest, and the checks
+        # against it, belong to the script that split the work.
         print("🟡 Using in-memory split manifest (dict provided).")
     else:
-        manifest_path = os.path.join(eos_vec_dir, "split_manifest.json")
-        if os.path.exists(manifest_path):
-            with open(manifest_path) as f:
-                split_manifest = json.load(f)
-            print(f"🟡 Using existing split manifest: {manifest_path}")
-        else:
-            print("🟢 Building new split manifest from global file list ...")
-            global_filelist = load_global_filelist()
-            include_folders = [folder_map[cname] for cname in class_names if cname in folder_map]
-            print(f"🧩 Including {len(include_folders)} folders in manifest:")
-            for f in include_folders:
-                print(f"   • {f}")
-
-            split_manifest = make_split_manifest(
-                global_filelist=global_filelist,
-                split_counts=split_counts,
-                include_folders=include_folders,
-                seed=42,
-            )
-            with open(manifest_path, "w") as f:
-                json.dump(split_manifest, f, indent=2)
-            print(f"✅ Wrote split manifest → {manifest_path}")
+        split_manifest = resolve_split_manifest(
+            manifest_path=os.path.join(eos_vec_dir, MANIFEST_NAME),
+            include_folders=[folder_map[c] for c in class_names if c in folder_map],
+            split_counts=split_counts,
+            seed=seed,
+            strategy=manifest_strategy,
+        )
+        check_shards_match_manifest(eos_vec_dir, split_manifest)
 
     # -------------------------------------------------------------------------
     # Vectorize files based on manifest

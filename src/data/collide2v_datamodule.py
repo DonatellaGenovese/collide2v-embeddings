@@ -75,8 +75,15 @@ class COLLIDE2VDataModule(LightningDataModule):
         preprocess: Optional[Dict[str, Any]] = None,
         to_classify: Optional[List[str]] = None,
         process_to_folder: Optional[Dict[str, str]] = None,
+        seed: int = 42,
+        manifest_strategy: str = "per_class",
     ):
-        """Initialize a `COLLIDE2VDataModule`."""
+        """Initialize a `COLLIDE2VDataModule`.
+
+        `seed` and `manifest_strategy` decide which Parquet files each class
+        contributes to each split. Change either and you get a different dataset,
+        so give that dataset a new `label` as well.
+        """
         super().__init__()
 
         # this line allows to access init params with 'self.hparams' attribute
@@ -91,6 +98,8 @@ class COLLIDE2VDataModule(LightningDataModule):
         self.datasets_config = datasets_config or {}
         self.preprocess_cfg = preprocess or {}
         self.process_to_folder = process_to_folder or {}
+        self.seed = seed
+        self.manifest_strategy = manifest_strategy
 
         self.vlen = compute_vlen(self.datasets_config)
 
@@ -133,6 +142,8 @@ class COLLIDE2VDataModule(LightningDataModule):
             tmp_vec_dir=self.paths["tmp_vec_dir"],
             eos_vec_dir=self.paths["eos_vec_dir"],
             split_counts=self.train_val_test_split_per_class,
+            seed=self.seed,
+            manifest_strategy=self.manifest_strategy,
             read_batch_size=512,
         )
 

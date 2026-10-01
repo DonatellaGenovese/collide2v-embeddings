@@ -4,7 +4,7 @@ submit_vectorization_jobs.py
 
 Use this script to batch submit vectorization jobs to Condor.
 
-Reads Hydra configs, builds a global split manifest, splits it into chunks of ≤ MAX_FILES_PER_JOB,
+Reads Hydra configs, resolves the dataset's split manifest, splits it into chunks of ≤ MAX_FILES_PER_JOB,
 and directly submits each chunk to Condor to run `vectorize_to_local` inside the Apptainer container.
 """
 
@@ -18,7 +18,7 @@ from math import ceil
 from pathlib import Path
 from omegaconf import DictConfig
 
-from src.data.utils import load_global_filelist, make_split_manifest
+from src.data.utils import MANIFEST_NAME, check_shards_match_manifest, resolve_split_manifest
 
 # -----------------------------------------------------------------------------
 # CONFIG
@@ -60,30 +60,30 @@ def main(cfg: DictConfig):
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     # -----------------------------------------------------------------------------
-    # BUILD GLOBAL MANIFEST
+    # RESOLVE THE MANIFEST
+    #
+    # The same file the datamodule reads and writes, `split_manifest.json` next to
+    # the shards, so the batch path and the local path cannot disagree about which
+    # files the dataset is made of.
     # -----------------------------------------------------------------------------
-    print("\n🟢 Building global manifest...")
-    global_filelist = load_global_filelist()
-
-    manifest = make_split_manifest(
-        global_filelist=global_filelist,
-        split_counts=split_counts,
-        include_folders=include_folders,
-        seed=42,
-    )
-
-    manifest_path = EOS_VEC_DIR / "split_manifest_global.json"
+    print("\n🟢 Resolving split manifest...")
     os.makedirs(EOS_VEC_DIR, exist_ok=True)
-    with open(manifest_path, "w") as f:
-        json.dump(manifest, f, indent=2)
-    print(f"✅ Wrote global manifest → {manifest_path}")
+
+    manifest = resolve_split_manifest(
+        manifest_path=str(EOS_VEC_DIR / MANIFEST_NAME),
+        include_folders=include_folders,
+        split_counts=split_counts,
+        seed=data_cfg.get("seed", cfg.get("seed", 42)),
+        strategy=data_cfg.get("manifest_strategy", "per_class"),
+    )
+    check_shards_match_manifest(str(EOS_VEC_DIR), manifest)
 
     # -----------------------------------------------------------------------------
     # FLATTEN MANIFEST INTO ENTRIES
     # -----------------------------------------------------------------------------
     entries = []
-    for folder, splits in manifest.items():
-        for split_name, files in splits.items():
+    for folder in include_folders:
+        for split_name, files in manifest[folder].items():
             for fname in files:
                 target_path = EOS_VEC_DIR / split_name / folder / fname.replace(".parquet", "_x.npy")
                 if not target_path.exists():

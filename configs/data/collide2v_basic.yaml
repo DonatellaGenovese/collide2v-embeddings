@@ -4,6 +4,21 @@ train_val_test_split_per_class: [9_960_000, 20_000, 20_000]
 num_workers: 6
 pin_memory: true
 
+# Seed of the file selection: which parquet files each class contributes to
+# each split. Inherited from the global `seed`, so one seed describes a run.
+# Changing it gives a different dataset, so change `label` too.
+# oc.select, not ${seed}, because eval.yaml composes this config without
+# defining a global seed, and a plain interpolation would fail to resolve there.
+seed: ${oc.select:seed,42}
+
+# How the files of a class are drawn:
+#   per_class  one generator per class, seeded from the class name. Use this.
+#              Adding or removing a class leaves the others untouched.
+#   legacy     one generator shared by all classes, in config order, over the
+#              file order of the event-count JSON. Only to rebuild a dataset
+#              produced before the per_class selection existed.
+manifest_strategy: per_class
+
 preprocess: ${preprocess}
 
 
