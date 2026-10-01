@@ -60,12 +60,12 @@ It follows the [lightning-hydra-template](https://github.com/ashleve/lightning-h
 
 | Part | State |
 | --- | --- |
-| Vectorisation and preprocessing | Working, Philip's version. Known limitations are documented in the sections below. |
+| Vectorisation and preprocessing | Working. What still bites is listed in section 4.6. |
 | tinyMLP, tinyTransformer classifiers | Working. |
 | Reading the dataset from EOS | Working. |
 | Reading the dataset from Hugging Face | Not yet supported. See section 3. |
 | Contrastive models, augmentations, probes | To be added. |
-| Deterministic file selection and event counts | To be rewritten. |
+| Reproducible file and event selection | Working, and tested without EOS. See section 5. |
 
 ## 2. Installation
 
@@ -151,7 +151,7 @@ The names `eos_data_dir` and `tmp_data_dir` are historical and have nothing to d
 
 **The project root.** Hydra resolves paths against the `PROJECT_ROOT` environment variable. The entry points set it themselves: each calls `rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)`, which walks up until it finds the `.project-root` file at the top of the repository. That is why the repository must be cloned whole, and why `.project-root` must not be deleted. If you write your own script that imports from `src/`, start it with the same two lines.
 
-**The event-count file.** `src/utils/nEvents_scan/file_event_counts.json` records how many events each Parquet file contains, so the code can plan the splits without opening every file. If the dataset is updated, regenerate it with `src/utils/nEvents_scan/scan_parquet_nevent.py`. Reading only the Parquet metadata, the scan is far quicker than reading the files. That script imports `tqdm`, which is not in `requirements.txt`, so install it first.
+**The event-count file.** `src/utils/nEvents_scan/file_event_counts.json` records how many events each Parquet file contains, so that building a manifest does not have to open every file. It is only used for that: how many events a dataset actually holds is read from the shards. If you use a process it does not list, or the dataset is updated, regenerate it with `src/utils/nEvents_scan/scan_parquet_nevent.py`. Reading only the Parquet metadata, the scan is far quicker than reading the files. That script imports `tqdm`, which is not in `requirements.txt`, so install it first.
 
 ## 3. The dataset
 
@@ -299,9 +299,9 @@ condor_q                                       # wait until empty
 python scripts/submit_preprocessing_jobs.py    # fits the stats, then submits
 ```
 
-Logs and per-job manifests land in `logs/condor_logs/`. Both scripts are idempotent: files already produced are skipped, so rerunning them submits only what is missing.
+Logs and per-job manifests land in `logs/condor_logs/`. Both scripts are idempotent: files already produced are skipped, so rerunning them submits only what is missing. Both read the same `split_manifest.json` as the datamodule, so the batch path and a local run cannot disagree about which files the dataset contains.
 
-There is no standalone command for a local run yet. Locally the two stages happen inside `src/train.py`, which calls them through the datamodule before training. Section 5 adds a command that runs them on their own.
+There is no standalone command for a local run yet. Locally the two stages happen inside `src/train.py`, which calls them through the datamodule before training.
 
 ### 4.3 What lands on disk
 
@@ -309,7 +309,8 @@ There is no standalone command for a local run yet. Locally the two stages happe
 <eos_data_dir>/<label>/
 ├── vectorized/
 │   ├── feature_map.json        # which column sits at which position
-│   ├── split_manifest.json     # which Parquet file went to which split
+│   ├── split_manifest.json     # which Parquet file went to which split, plus
+│   │                            # the seed and strategy that chose them
 │   └── train|val|test/<process>/<file>_x.npy, _y.npy
 └── preprocessed/
     ├── feature_map.json        # after transforms, so wider than the raw one
@@ -346,7 +347,9 @@ Each group of features gets a transform and, independently, a normaliser. Both a
 
 `trig` and `onehot` change the number of columns, which is why the preprocessed feature map is wider than the raw one.
 
-`mode` controls what a run does: `fit_only` computes the statistics, `apply_only` reuses existing ones, `fit_and_apply` does both. The fit reads training files only — `fit_num_files_per_class` of them per class — and the statistics are then applied to all three splits, so val and test never influence the scale.
+`mode` controls what a run does: `fit_only` computes the statistics, `apply_only` reuses existing ones, `fit_and_apply` does both. The fit reads training files only — `fit_num_files_per_class` of them per class, the first ones alphabetically, which it prints — and the statistics are then applied to all three splits, so val and test never influence the scale.
+
+Rerunning is safe. The pipeline compares the two trees shard by shard: when some vectorised shards have no preprocessed counterpart, as after a batch job that died part way through, it says which ones and applies the **stored** statistics to those alone. It never refits, because refitting on a different set of files would put the new shards on a different scale from the old.
 
 ### 4.5 Checking the output
 
@@ -361,26 +364,78 @@ python scripts/parquet_plotter.py --input_dir <dataset_dir> --output_dir plots/p
 
 Compare the two. After preprocessing a feature should sit around 0 with a spread of order 1; a column of exact zeros means a `topk` slot never filled, and a lone huge outlier usually means statistics fitted on too few files.
 
-### 4.6 Known limitations
+### 4.6 What still bites
 
-They matter most when you compare two runs, and they are why section 5 exists.
-
-- **Two different manifests.** The datamodule writes `split_manifest.json`, while `submit_vectorization_jobs.py` writes its own `split_manifest_global.json` and never reads the other. The local path and the batch path can pick different files for the same dataset.
-- **One RNG for all classes.** `make_split_manifest` shuffles every class with a single generator, in config order, with a seed fixed in the code. Add or remove a class and the files chosen for all the others change too.
-- **A class with few files loses splits.** Files are assigned whole and greedily, train first. A process with a single file puts it in train and leaves val and test empty.
-- **The loader ignores the manifest.** It takes whatever `_x.npy` it finds, splits the files across workers without regard for class, and caps each class at `ceil(N/num_workers)` events taken from the first rows. Change `num_workers` and you change the sample; the counts in the config are not honoured.
-- **The event check trusts the snapshot, not the data.** `has_enough_events` lists the shards on disk but takes their sizes from `file_event_counts.json`, so it never notices a short or truncated shard, and it raises `KeyError` on any file the snapshot does not know.
 - **A Parquet file that cannot be read is skipped.** The error is printed and vectorisation carries on, so a split can come out smaller than asked for while every job reports success. Read the logs, do not just check that they finished.
-- **Statistics are fitted on the first files alphabetically.** Deterministic, but not a random sample of the class.
-- **`src/train.py` vectorises on its own.** Running it with data missing starts the whole pipeline instead of stopping, which on the full dataset means a job that runs for days.
-- **The job scripts ignore command-line overrides.** `vectorize_job.py` and `preprocess_job.py` clear `sys.argv` before Hydra reads it, so `experiment=...` passed on the command line has no effect and the default experiment is used.
+- **`src/train.py` vectorises on its own.** Running it with data missing starts the whole pipeline instead of stopping, which on the full dataset means a job that runs for days. Produce the data with the submission scripts first.
+- **The job scripts ignore command-line overrides.** `vectorize_job.py` and `preprocess_job.py` clear `sys.argv` before Hydra reads it, so `experiment=...` on the command line has no effect and the default experiment is used. Change the default in `configs/vectorize_preprocess.yaml` instead.
+- **The default paths are CERN paths.** `configs/paths/fm_testing.yaml` points at one person's EOS directories. Override them in `configs/local/default.yaml`, as section 2 describes.
+- **Checking a dataset reads every shard header.** `has_enough_events` and the loader both open one file per shard, which on EOS costs about a minute and a half for a twelve-class dataset. It is paid once at startup.
+
+## 5. Which files a dataset is made of
+
+A dataset here is not "the COLLIDE-2V sample": it is a particular set of Parquet files, cut into train, val and test, and a particular set of events read from them. Two runs are comparable only if that set is the same, so it is written down, checked, and reproducible from a seed.
+
+### 5.1 The manifest
+
+`split_manifest.json`, next to the vectorised shards, records which file went to which split, and under `_meta` the seed, the strategy and the split sizes that produced it:
+
+```json
+{
+  "_meta": {"seed": 42, "manifest_strategy": "per_class", "split_counts": [1000000, 100000, 100000]},
+  "QCD_HT50toInf": {"train": ["QCD_HT50toInf-NEVENT10000-RS26000001.parquet", "..."],
+                    "val": ["..."], "test": ["..."]}
+}
+```
+
+Files are assigned whole, and a split stops as soon as it holds the events asked for, so the first file of each split is where the previous one stopped. The rules around that file are what matter:
+
+- **An existing manifest is never rewritten.** It is reused as it is, and only *extended*, with classes it does not yet cover.
+- **A run that does not match it stops.** Change the seed, the strategy or the split sizes of a dataset that already exists and the run refuses, naming both values, and tells you to use a new `data.label`. The shards on disk were chosen by the stored settings; mixing in files drawn differently would leave one directory holding two samples.
+- **Shards the manifest does not list stop the run too.** For a dataset built before the manifest recorded its metadata this is a warning instead, since those predate the rule.
+
+### 5.2 Seeds
+
+`data.seed` decides the draw and is inherited from the global `seed`, so one seed describes a whole run.
+
+`data.manifest_strategy` decides how it is used:
+
+| Strategy | How the files are drawn |
+| --- | --- |
+| `per_class` (default) | One generator per class, seeded from the class name. The files of a class depend only on that class, the seed and the targets. |
+| `legacy` | One generator shared by all classes, in config order. Only to rebuild a dataset produced before `per_class` existed. |
+
+Under `legacy`, adding or removing one class in `to_classify` shifts the draw of every class after it, so a dataset could not be extended or reduced without rebuilding all of it, and two studies that differed by one class shared no files. Under `per_class`, adding a class leaves the others untouched and the manifest is simply extended.
+
+### 5.3 Which events the loader reads
+
+The sample is decided once, in the main process, as a plan of which rows of which shard belong to the epoch, and only then handed to the DataLoader workers. So:
+
+- asking for N events per class gives exactly N, or all of them with a warning when a class has fewer;
+- `num_workers` changes how fast an epoch is read and nothing else;
+- when one shard of a class is used only partly, its rows are drawn with the seed rather than taken from the top of the file.
+
+Each split draws with its own seed, so `val` does not take the same rows of the same shards as `train`.
+
+### 5.4 Reproducing a dataset
+
+Keep the `label`, the `seed`, the strategy and the split sizes, and you get the same files and the same events. Change any of them and give the dataset a new `label`: that is the one rule the rest depends on.
+
+To rebuild a dataset produced before all this, point the config at its directory and its stored manifest is used as it is. If it has no `_meta`, the run says so and uses it anyway.
+
+### 5.5 Checking it yourself
+
+```bash
+pytest tests/test_pipeline_determinism.py   # writes its own fake Parquet files, no EOS needed
+```
+
+Those tests vectorise and preprocess a small fake dataset twice and require the shards to be identical, read it with several worker counts and require the same events, and delete a preprocessed shard to check it is rebuilt identically without refitting the statistics.
 
 ---
 
 <!--
   SECTIONS BELOW ARE THE ORIGINAL README AND ARE BEING REWRITTEN.
-  Next: section 5, the deterministic file selection; then training,
-  then extending the code.
+  Next: training and the models, then extending the code.
 -->
 
 ### Training Iterations and GPU Usage
