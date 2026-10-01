@@ -608,83 +608,67 @@ def worker_init_fn(worker_id):
 
 
 # ============================================================
-# CHECK IF ENOUGH FILES ARE PRESENT IN A TARGET DIRECTORY
+# CHECK THAT A TARGET DIRECTORY HOLDS THE EVENTS THAT WERE ASKED FOR
 # ============================================================
-import os
-import json
-import math
+
+
+def count_split_events(split_dir: str) -> tuple[int, int]:
+    """(events, shards) in one split directory, read from the .npy headers.
+
+    Reading the header costs one file open and no data, which is what the loader
+    does too, and it describes the shards as they are rather than as a snapshot
+    of the Parquet files says they should be.
+    """
+    shards = sorted(f for f in os.listdir(split_dir) if f.endswith("_x.npy"))
+    events = sum(np.load(os.path.join(split_dir, f), mmap_mode="r").shape[0] for f in shards)
+    return events, len(shards)
+
 
 def has_enough_events(
     target: str,
     train_val_test_split_per_class,
     classnames,
     folder_map,
-    event_count_json_path="src/utils/nEvents_scan/file_event_counts.json",
 ) -> bool:
-    """
-    Returns True only if all splits/classes meet required total events
+    """True when every (split, class) holds at least the events asked for.
+
+    The counts come from the shards themselves. They used to come from
+    `file_event_counts.json`, which describes the Parquet files: that missed a
+    shard written short, raised KeyError on any file the snapshot did not list,
+    and could not be used at all for data downloaded from Hugging Face, whose
+    files are not in the snapshot.
 
     Args:
-        target: Directory that contains train/val/test/{folder}/
+        target: directory holding train/val/test/{folder}/
         train_val_test_split_per_class: e.g. [50_000, 20_000, 20_000]
-        classnames: list like ["QCD", "ggHbb"]
-        folder_map: mapping class_name -> folder name used in vectorized dir
-        event_count_json_path: path to JSON with event counts per parquet file
+        classnames: the classes to check, e.g. ["QCD_inclusive", "ggHbb"]
+        folder_map: class name -> directory name
     """
-
     if not target or not os.path.exists(target):
+        print(f"❌ {target} does not exist.")
         return False
 
-    # Load event count database
-    if not os.path.exists(event_count_json_path):
-        raise FileNotFoundError(f"Missing event count file: {event_count_json_path}")
-
-    with open(event_count_json_path) as f:
-        event_db = json.load(f)
-
-    split_names = ["train", "val", "test"]
-
-    for split, needed_events in zip(split_names, train_val_test_split_per_class):
+    for split, needed in zip(SPLIT_NAMES, train_val_test_split_per_class):
         for cname in classnames:
-            folder = folder_map[cname]         # e.g. "QCD_HT50toInf"
+            folder = folder_map[cname]
             split_dir = os.path.join(target, split, folder)
 
             if not os.path.isdir(split_dir):
-                print(f"split_dir '{split_dir}' does not exist.")
+                print(f"❌ Missing directory: {split_dir}")
                 return False
 
-            # list files: *_x.npy
-            files = [f for f in os.listdir(split_dir) if f.endswith("_x.npy")]
-            if not files:
-                print(f"No files ending in _x.npy found in '{split_dir}'.")
+            events, shards = count_split_events(split_dir)
+            if shards == 0:
+                print(f"❌ No *_x.npy shards in {split_dir}")
                 return False
 
-            # sum events using event_db
-            total_events = 0
-            for npy_name in files:
-                # convert e.g.
-                #   QCD_HT50toInf-NEVENT10000-RS26000001_x.npy
-                # → QCD_HT50toInf-NEVENT10000-RS26000001.parquet
-                parquet_name = npy_name.replace("_x.npy", ".parquet")
-
-                # event_db entry: event_db[folder][parquet_name]
-                if folder not in event_db:
-                    raise KeyError(f"Folder '{folder}' missing in event count DB")
-
-                if parquet_name not in event_db[folder]:
-                    raise KeyError(
-                        f"File '{parquet_name}' missing in event count DB for folder '{folder}'"
-                    )
-
-                total_events += event_db[folder][parquet_name]
-
-            # check whether this class meets its required events for this split
-            if total_events < needed_events:
-                # Not enough events for this class in this split
-                print(f"Total events found ({total_events}) are less than required events ({needed_events}) for class {cname}.")
+            if events < needed:
+                print(
+                    f"❌ {split}/{cname}: {events:,} events in {shards} shards, "
+                    f"{needed:,} requested."
+                )
                 return False
-            else:
-                print(f"Class {cname} had enough events ({total_events} events, required: {needed_events} events).")
 
-    # If all classes in all splits have enough events
+            print(f"✅ {split}/{cname}: {events:,} events in {shards} shards (need {needed:,})")
+
     return True
