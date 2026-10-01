@@ -93,8 +93,23 @@ class PreprocessingPipeline:
         if mode not in ("fit_only", "fit_and_apply", "apply_only"):
             raise ValueError("preprocess.mode must be 'fit_only', 'fit_and_apply' or 'apply_only'.")
 
+        # The presence of norm_stats.json used to be enough to skip everything,
+        # which left a half-written dataset looking finished: a batch job that died
+        # part way through, or a class vectorized later, was never preprocessed and
+        # training then read whatever happened to be there.
         if os.path.exists(self.stats_out):
-            print(f"🟢 Preprocessed data already found with {self.stats_out} — skipping full preprocessing.")
+            missing = self.missing_outputs()
+            if not missing:
+                print(f"🟢 Every vectorized shard already has its preprocessed "
+                      f"counterpart, and {self.stats_out} is in place — nothing to do.")
+                return
+            total = sum(len(files) for files in missing.values())
+            print(f"🟡 {self.stats_out} exists but {total} shard(s) are not preprocessed yet:")
+            for (split, cls_folder), files in sorted(missing.items()):
+                print(f"   • {split}/{cls_folder}: {len(files)} missing")
+            print("🟡 Applying the stored statistics to those, without refitting.")
+            self.apply_to_all_files(self._load_stats_json())
+            save_feature_map(self.expanded_fm, self.fm_out)
             return
 
         # Fit stats if requested, else load existing stats
@@ -117,10 +132,40 @@ class PreprocessingPipeline:
 
     # ---------- core steps ----------
 
+    def missing_outputs(self) -> Dict:
+        """{(split, class folder): [shard names]} present in vectorized, absent here.
+
+        Compares the two trees shard by shard, which is how a run can tell a
+        finished dataset from one that only has its statistics written.
+        """
+        missing = {}
+        for split in ("train", "val", "test"):
+            for cls in self.class_order:
+                cls_folder = self.proc2fold[cls]
+                in_dir = os.path.join(self.paths["eos_vec_dir"], split, cls_folder)
+                out_dir = os.path.join(self.paths["eos_preproc_dir"], split, cls_folder)
+                if not os.path.isdir(in_dir):
+                    continue
+                produced = set(os.listdir(out_dir)) if os.path.isdir(out_dir) else set()
+                todo = sorted(
+                    f for f in os.listdir(in_dir) if f.endswith("_x.npy") and f not in produced
+                )
+                if todo:
+                    missing[(split, cls_folder)] = todo
+        return missing
+
     def fit_normalization(self) -> Dict:
         """
         Fit column-wise normalization AFTER transforms on a subset of train files.
         Returns a dict containing both array_stats and human-readable column_stats.
+
+        WHICH FILES THE FIT READS. The first `fit_num_files_per_class` shards of
+        each class in the train split, in alphabetical order, which for this
+        dataset means the lowest random seeds of the generation. The choice is
+        deterministic, so two runs on the same data fit the same statistics, but it
+        is not a random sample of the class: raise `fit_num_files_per_class` if a
+        class is heterogeneous across its files. Only the train split is read, so
+        val and test never influence the scale.
         """
         print("🟡 Fitting normalization stats from training subset...")
         num_files = self.cfg.get("fit_num_files_per_class", 5)
