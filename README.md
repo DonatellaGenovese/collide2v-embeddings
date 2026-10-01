@@ -1,6 +1,8 @@
 <div align="center">
 
-# Repository for loading and processing the COLLIDE-2V dataset and training for a foundation model
+# COLLIDE-2V embeddings
+
+**Vectorise the COLLIDE-2V dataset, train classifiers and contrastive encoders on it, and evaluate the embeddings they produce.**
 
 <a href="https://pytorch.org/get-started/locally/"><img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-ee4c2c?logo=pytorch&logoColor=white"></a>
 <a href="https://pytorchlightning.ai/"><img alt="Lightning" src="https://img.shields.io/badge/-Lightning-792ee5?logo=pytorchlightning&logoColor=white"></a>
@@ -9,50 +11,377 @@
 
 </div>
 
-## Description
+## 1. What this repository is
 
-At its current state, this repository is loading data from the COLLIDE-2V dataset as saved on EOS, saving it in a vectorized form usable for training, preprocessing it, and using it to train either a tinyMLP or a tinyTransformer classifier. The detailled and modular Hydra config allows for detailled configuration of feature and processes selection, preprocessing and standardization methods and model and training parameters. The code can be readily used to train classifiers with the COLLIDE-2V dataset.
+COLLIDE-2V is a large simulated dataset of proton-proton collisions. Each event is one collision, described by the objects reconstructed from it: jets, electrons, muons, photons, missing transverse energy, and more. The dataset is stored as Parquet files, one folder per physics process.
 
-The repository follows the lightning-hydra framework that is accessible here: <https://github.com/ashleve/lightning-hydra-template> . For more details on the structure of the code please consult the readme there.
+It exists in two versions: a private one on EOS, at CERN, and a public one on Hugging Face. They are not interchangeable (different events, different columns). Section 3 gives the details.
 
-Configuration of all aspects of the workflow is handled in the .yaml files in `configs/`, where more detailled documentations on the various config parameters can also be found.
+Neural networks do not read Parquet. They read fixed-length vectors. Most of the work in this repository is therefore not the training itself but everything around it: turning variable-length lists of particles into vectors of a fixed size, normalising them, and doing so reproducibly over hundreds of gigabytes.
 
-The repository is build with support for the Mlflow logger and hyperparameter optimization with Optuna.
+The pipeline has three stages, and you can run them separately:
 
-Please send any feedback or suggestions to plonerp@ethz.ch.
-
-## Installation
-
-#### Pip
-
-```bash
-# clone project
-git clone https://github.com/pploner/foundation_model_testing.git
-cd foundation_model_testing
-
-# build container with dependencies
-apptainer build fm_testing.sif fm_testing.def
+```
+Parquet files          .npy shards            .npy shards           model
+(one per process)  →   (raw vectors)      →   (normalised)      →   weights
+                       vectorisation          preprocessing         training
 ```
 
-If the dataset itself has been updated, the event map at `src/utils/nEvents_scan/file_event_counts.json` will need to be re-generated. This can be done by executing the `scan_parquet_nevent.py` script.
+1. **Vectorisation** reads the Parquet columns you asked for and writes one flat vector per event. Variable-length lists become a fixed number of slots: the *k* highest-p<sub>T</sub> jets, the *k* highest-p<sub>T</sub> muons, and so on, padded with zeros when an event has fewer objects.
+2. **Preprocessing** transforms and normalises those vectors, for example `log1p` on momenta and (sin, cos) on angles, and writes the statistics it used to a file so the same scaling can be reapplied later.
+3. **Training** streams the normalised shards into a model.
 
-## Usage
+### What you can do with it
 
-### Configuration
-The configuration of every aspect of the pipeline is handled in the Hydra .yaml files in `configs`. The optimal workflow is to fix all the parameters you don't change inside the respective files, and only overwrite the ones you change in a corresponding experiment file that is then called in `configs/train.yaml`. Documentation is available as comments inside the config files.
+- **Supervised classification**, inherited from the original repository: a small MLP and a small transformer that classify events by physics process.
+- **Contrastive learning** (in progress): two worked examples, SimCLR, which uses no labels at all, and SupCon, which uses them only to decide which events should end up close together. 
 
-### Full Pipeline
-The full vectorization-preprocessing-training-evaluation pipeline can be executed by calling `python src/train.py`. Vectorized and preprocessed data will be saved in corresponding .npy files inside the directories given in `configs/paths` together with a feature map file that maps the dataset features to their position in the .npy files.
+### Where the code comes from
 
-If the corresponding .npy files already exist, the script will skip those steps and move directly to training.
+This repository starts as a copy of [pploner/foundation_model_testing](https://github.com/pploner/foundation_model_testing) at commit `13448e6`, written by Philip Ploner. The entire commit history up to that point is his work, and the vectorisation, preprocessing and classification code described below is his design. 
 
-Model weights are saved in checkpoint files in the folder of the corresponding run in `logs/`. If one wants to perform just model evaluation using a given checkpoint, one can instead use `src/eval.py`.
+It follows the [lightning-hydra-template](https://github.com/ashleve/lightning-hydra-template): PyTorch Lightning for the training loop, Hydra for the configuration. If a config file or a directory looks unfamiliar, that template's README explains the convention.
 
-### Separate Vectorization and Preprocessing
-Since the dataset size is enormous, depending on the feature selection and sample size the vectorization and preprocessing procedures might take on the order of weeks. For this purpose, vectorization and preprocessing can be performed independently first, using the HTCondor batch submission framework on Lxplus. `scripts/submit_vectorization_jobs.py` and `scripts/submit_preprocessing_jobs.py` can be used to do those steps in an optimized manner, where the tasks are equally distributed over many compute nodes, saving a lot of time. Take care to only submit the preprocessing once all vectorization jobs have finished.
+### Map of the repository
 
-### Data Validation
-The features of the source dataset .parquet files can be inspected with `scripts/parquet_plotter.py`, and the features of the vectorization and preprocessing .npy files can be plotted using `scripts/plot_features.py`. Use these scripts to validate and inspect the data.
+| Path | What is inside |
+| --- | --- |
+| `configs/` | Every parameter of every stage, as Hydra `.yaml` files. Start here. |
+| `src/data/` | Vectorisation, the split manifest, the streaming dataset, the Lightning datamodule. |
+| `src/preprocessing/` | Transforms, normalisers, and the pipeline that fits and applies them. |
+| `src/models/` | One file per model, each a Lightning module. |
+| `src/train.py`, `src/eval.py` | Entry points for training and for evaluating a checkpoint. |
+| `scripts/` | Batch submission to HTCondor, plotting, data inspection. |
+| `src/utils/nEvents_scan/` | The event-count scan of the dataset and the script that regenerates it. |
+| `tests/` | Pytest suite. |
+| `notebooks/` | Exploration and result plots. |
+
+### Status
+
+| Part | State |
+| --- | --- |
+| Vectorisation and preprocessing | Working, Philip's version. Known limitations are documented in the sections below. |
+| tinyMLP, tinyTransformer classifiers | Working. |
+| Reading the dataset from EOS | Working. |
+| Reading the dataset from Hugging Face | Not yet supported. See section 3. |
+| Contrastive models, augmentations, probes | To be added. |
+| Deterministic file selection and event counts | To be rewritten. |
+
+## 2. Installation
+
+You will run this code in one of two places, and the setup differs.
+
+- **On lxplus**, inside an Apptainer container. This is where the full dataset lives, and where you submit batch jobs.
+- **Anywhere else**: your laptop, a group workstation, a university cluster or a rented GPU machine, in a virtual environment, on a subset of the data downloaded from Hugging Face.
+
+The code is the same in both cases. What changes is where the data sits, where the outputs go, and whether there is a GPU.
+
+### On lxplus
+
+```bash
+# 1. Clone, on AFS. Do not clone onto /eos: batch jobs cannot execute files there.
+cd /afs/cern.ch/user/<first letter>/<username>
+git clone https://github.com/DonatellaGenovese/collide2v-embeddings.git
+cd collide2v-embeddings
+
+# 2. Build the container. It installs everything in requirements.txt.
+#    Expect a few minutes and a .sif file of about 9 GB: your AFS home directory
+#    has a 10 GB quota, so build it under /afs/cern.ch/work/... or on EOS instead,
+#    and point the wrapper scripts at it.
+apptainer build fm_testing.sif fm_testing.def
+
+# 3. Check that it works. /eos must be bound explicitly, it is not visible by default.
+apptainer exec --bind /eos:/eos --bind /afs:/afs fm_testing.sif python -c "import torch, lightning, hydra; print('ok')"
+```
+
+From then on, every command in this README that starts with `python` is meant to run inside the container:
+
+```bash
+apptainer exec --bind /eos:/eos --bind /afs:/afs fm_testing.sif python src/train.py
+```
+
+Add `--nv` to that command when you want the GPU.
+
+### Anywhere else
+
+```bash
+git clone https://github.com/DonatellaGenovese/collide2v-embeddings.git
+cd collide2v-embeddings
+
+python -m venv .venv            # Python 3.10 is what the container uses
+source .venv/bin/activate       # on Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+pytest -k "not slow"            # a first check that the environment is sane
+```
+
+Conda works as well as `venv`, and if the machine already has Apptainer or Docker you can build the same container as on lxplus from `fm_testing.def` and skip the environment entirely. Whatever you choose, the point is that `import torch, lightning, hydra` works and `pytest` runs.
+
+**With a GPU.** `requirements.txt` asks for `torch>=2.0.0` and pip will give you a CUDA build on Linux, but the CUDA version it targets is not always the one your driver supports. Check first, and if the check fails, install the matching build from [pytorch.org](https://pytorch.org/get-started/locally/):
+
+```bash
+python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
+Then ask for the GPU at run time. The trainer is chosen by config, so you never edit code to switch device:
+
+```bash
+python src/train.py trainer=gpu                 # one GPU, bf16 mixed precision
+python src/train.py trainer=gpu trainer.devices=2
+python src/train.py trainer=cpu                 # force CPU even on a GPU machine
+```
+
+
+**Your own paths.** The defaults in `configs/paths/fm_testing.yaml` point at CERN storage, which does not exist on your machine. Rather than editing that file, which everyone shares, put your own values in `configs/local/default.yaml`. Both `configs/train.yaml` and `configs/vectorize_preprocess.yaml` end their defaults list with `- optional local: default`, so Hydra loads that file when it exists and carries on when it does not, and `.gitignore` already lists it, so your settings are never committed and never collide with anyone else's:
+
+```yaml
+# @package _global_
+paths:
+  dataset_dir: /home/you/data/collide          # where the Parquet files are
+  tmp_data_dir: /home/you/data/collide2v/tmp   # scratch space for vectorisation
+  eos_data_dir: /home/you/data/collide2v       # where the .npy shards end up
+
+data:
+  num_workers: 4                               # a sane value for a laptop
+```
+
+The names `eos_data_dir` and `tmp_data_dir` are historical and have nothing to do with EOS: they are simply the output directory and the scratch directory.
+
+### Two things that are easy to miss
+
+**The project root.** Hydra resolves paths against the `PROJECT_ROOT` environment variable. The entry points set it themselves: each calls `rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)`, which walks up until it finds the `.project-root` file at the top of the repository. That is why the repository must be cloned whole, and why `.project-root` must not be deleted. If you write your own script that imports from `src/`, start it with the same two lines.
+
+**The event-count file.** `src/utils/nEvents_scan/file_event_counts.json` records how many events each Parquet file contains, so the code can plan the splits without opening every file. If the dataset is updated, regenerate it with `src/utils/nEvents_scan/scan_parquet_nevent.py`. Reading only the Parquet metadata, the scan is far quicker than reading the files. That script imports `tqdm`, which is not in `requirements.txt`, so install it first.
+
+## 3. The dataset
+
+> **Work in progress.** COLLIDE-2V is still being produced and revised. The numbers, file lists and column names below were measured on the version available at the time of writing, and later releases may change them. Treat this section as a description of what you will find today, not as a specification. Re-run the checks described here whenever a new version is published.
+
+### How the data is organised
+
+One folder per physics process, and inside it Parquet files whose names carry their own metadata:
+
+```
+HH_4b/HH_4b-NEVENT10000-RS20000001.parquet
+└─ process   └─ process  └─ events requested  └─ random seed of the generation
+```
+
+`NEVENT10000` is what was requested from the generator, not necessarily what the file contains: the file above holds 9,993 events. Always take the count from the file, never from its name.
+
+Each row is one collision event. Each column is one property of one kind of object, stored as a list when the object can appear several times per event. 
+
+Column names have three parts, `<level>_<object>_<variable>`, and the level matters:
+
+| Prefix | Meaning |
+| --- | --- |
+| `Gen_` | Generator truth, before the detector. Not usable as an input to a model that should work on real data. |
+| `FullReco_` | Objects as the full offline reconstruction would see them. **This is what the pipeline uses.** |
+| `L1T_` | Objects as the level-1 trigger would see them, with a coarser resolution. |
+| `Event_` | Event-level bookkeeping: cross section, weights, process id. |
+
+
+### The copy on EOS
+
+```
+/eos/project/f/foundational-model-dataset/samples/production_final
+```
+
+53 process folders, from single Higgs to top quarks to QCD multijets, several hundred million events in total. This is the complete dataset and the one all published results so far were produced with. It is readable from lxplus and from batch nodes, and it is far too large to copy.
+
+The mapping from the process names used in the configs to these folder names is in `configs/data/collide2v_basic.yaml`, under `process_to_folder`. 
+
+### The copy on Hugging Face
+
+[`fastmachinelearning/collide-1m`](https://huggingface.co/datasets/fastmachinelearning/collide-1m), published under MIT, DOI [10.57967/hf/8447](https://doi.org/10.57967/hf/8447). 740 Parquet files over 50 processes, about 953 GB in total, with individual files of 1.2 to 1.6 GB.
+
+This is the copy to use if you do not have the access to CERN account. Do not clone the repository: download the few files you need.
+
+The repository is laid out as one directory per process, with the same names as the folders on EOS. List it first, then download only the shards you picked:
+
+```python
+from huggingface_hub import list_repo_files, snapshot_download
+
+REPO = "fastmachinelearning/collide-1m"
+PROCESSES = ["QCD_HT50toInf", "HH_4b"]   # folder names, as on EOS
+FILES_PER_PROCESS = 2
+
+available = [f for f in list_repo_files(REPO, repo_type="dataset") if f.endswith(".parquet")]
+
+wanted = []
+for p in PROCESSES:
+    shards = sorted(f for f in available if f.startswith(f"{p}/"))
+    print(f"{p}: {len(shards)} files available, taking {FILES_PER_PROCESS}")
+    wanted += shards[:FILES_PER_PROCESS]
+
+snapshot_download(REPO, repo_type="dataset", allow_patterns=wanted, local_dir="data/collide")
+```
+
+Processes have between 2 and about 100 files each, of 1.2 to 1.6 GB, so check the count printed above before raising `FILES_PER_PROCESS`. Point `paths.dataset_dir` at `data/collide` and the pipeline reads it exactly as it reads EOS.
+
+Note that `huggingface_hub` is not yet in `requirements.txt`; install it yourself with `pip install huggingface_hub` until the loader described below is merged.
+
+### EOS and Hugging Face are not the same data
+
+They share file names and process names, which makes it tempting to treat them as interchangeable. They are not, in two separate ways.
+
+**Different events.** The same file name holds different collisions. `HH_4b-NEVENT10000-RS20000001.parquet` has 9,992 events on Hugging Face and 9,993 on EOS, and of the 124 columns the two versions share, not one holds identical values. A number obtained on EOS cannot be compared with a number obtained on Hugging Face. Say which copy you used, in your notes and in anything you publish.
+
+**Different columns.** 174 columns on Hugging Face against 271 on EOS, and the difference is not a subset relation:
+
+| Only on Hugging Face | Only on EOS |
+| --- | --- |
+| `GenJetAK4`, `GenJetAK8`, `GenPart`, `PFCand`, `PrimaryVertex` | `Event_*`, `Gen_*`, `PFPart`, `Vertex`, `Rho`, `ScalarHT` |
+
+Of the 29 input variables used in the published study, nine exist only on EOS:
+
+```
+JetPuppiAK4_NNeutrals
+Electron_Charge, Electron_D0, Electron_DZ
+MuonTight_Charge, MuonTight_D0, MuonTight_DZ
+PhotonTight_EhadOverEem, PhotonTight_IsolationVarRhoCorr
+```
+
+The consequence for this repository: the **default feature configuration will use only the 20 variables present in both copies**, so that the same experiment definition runs on either, and an optional "extended EOS" configuration will add the other nine. Vectorisation will check the columns of the first file before starting, and fail with a clear message naming the missing ones, rather than crashing halfway through a batch job. Both are part of the work described in the next sections.
+
+### Inspecting the files yourself
+
+Before trusting any of the above for a process you care about, look:
+
+```python
+import pyarrow.parquet as pq
+
+pf = pq.ParquetFile("HH_4b-NEVENT10000-RS20000001.parquet")
+print(pf.metadata.num_rows)                    # events, without reading the data
+print(len(pf.schema_arrow.names))              # columns
+print([c for c in pf.schema_arrow.names if "MuonTight" in c])
+```
+
+`scripts/parquet_plotter.py` plots distributions straight from the Parquet files, and `scripts/plot_features.py` does the same for the `.npy` files produced later. Use them to check that what came out of the pipeline still looks like what went in.
+
+## 4. Vectorisation and preprocessing
+
+This section describes the pipeline as inherited from the original repository. Both stages are driven by `configs/vectorize_preprocess.yaml`, which pulls in a `data`, a `preprocess` and an `experiment` config. Read section 4.6 before launching anything large.
+
+The convention is to leave the base configs alone and put everything specific to your study in one file under `configs/experiment/`, selected with `experiment=<name>`. That file is then the whole description of what you ran.
+
+### 4.1 Choosing the features
+
+`datasets_config` lists the columns to read, grouped by object type:
+
+```yaml
+jets:
+  cols: [FullReco_JetPuppiAK4_PT, FullReco_JetPuppiAK4_Eta, FullReco_JetPuppiAK4_Phi]
+  topk: 12      # keep the 12 highest-pT jets, sorted by the first column
+  count: true   # add one feature with the number of jets in the event
+```
+
+- `topk: k` gives the group *k* slots. An event with fewer objects gets zeros; one with more keeps the *k* highest by the first column and **the rest are dropped**. Check that this does not cut into the signal you care about.
+- `topk: null` is for scalars, like MET, where there is nothing to sort.
+- `count: true` adds the true multiplicity before truncation. Without it, the model cannot tell 8 objects from 20.
+
+The rest of the configuration:
+
+| Key | Meaning |
+| --- | --- |
+| `to_classify` | Processes to use, as names from `process_to_folder`. Their order defines the integer labels. |
+| `train_val_test_split_per_class` | Target events per class, `[train, val, test]`. |
+| `label` | Name of the output directory. **Change it whenever you change anything above**, or new data lands in the same folder as the old and the two are silently mixed. |
+| `paths` | Where the Parquet files are read from and where the `.npy` shards go. |
+
+### 4.2 Running it
+
+On the batch system the two stages are separate scripts, and the second needs the first to be finished:
+
+```bash
+# from the project directory on AFS, with the container available
+python scripts/submit_vectorization_jobs.py    # ≤50 files per job
+condor_q                                       # wait until empty
+python scripts/submit_preprocessing_jobs.py    # fits the stats, then submits
+```
+
+Logs and per-job manifests land in `logs/condor_logs/`. Both scripts are idempotent: files already produced are skipped, so rerunning them submits only what is missing.
+
+There is no standalone command for a local run yet. Locally the two stages happen inside `src/train.py`, which calls them through the datamodule before training. Section 5 adds a command that runs them on their own.
+
+### 4.3 What lands on disk
+
+```
+<eos_data_dir>/<label>/
+├── vectorized/
+│   ├── feature_map.json        # which column sits at which position
+│   ├── split_manifest.json     # which Parquet file went to which split
+│   └── train|val|test/<process>/<file>_x.npy, _y.npy
+└── preprocessed/
+    ├── feature_map.json        # after transforms, so wider than the raw one
+    ├── norm_stats.json         # the statistics used, needed to reapply the scaling
+    └── train|val|test/<process>/<file>_x.npy, _y.npy
+```
+
+`_x.npy` holds `(events, features)` float32, `_y.npy` the integer label of the class. `feature_map.json` is the only way to know what a column means, so read it rather than counting by hand:
+
+```python
+import json, numpy as np
+fm = json.load(open("feature_map.json"))
+X = np.load("<file>_x.npy", mmap_mode="r")
+jets = X[:, fm["jets"]["start"]:fm["jets"]["end"]]     # all jet features
+```
+
+### 4.4 Preprocessing
+
+Each group of features gets a transform and, independently, a normaliser. Both are set per group in `configs/preprocess/collide2v.yaml`.
+
+| Transform | Applied by default to |
+| --- | --- |
+| `log1p` | pT, mass, MET — long tails compressed, sign preserved |
+| `trig` | φ, replaced by its sine and cosine, so that 0 and 2π are the same point |
+| `onehot` | PID, charge, b-tag — categories, not numbers |
+| `identity` | everything else |
+
+| Normaliser | Applied by default to |
+| --- | --- |
+| `robust` | most continuous features: median 0, scaled by the interquartile range, so outliers do not set the scale |
+| `minmax` | object counts and the PUPPI b-tag, into [0, 1] |
+| `none` | φ and the one-hot groups, which are already on a fixed scale |
+| `standard` | nothing by default: mean 0, std 1, available if you want it |
+
+`trig` and `onehot` change the number of columns, which is why the preprocessed feature map is wider than the raw one.
+
+`mode` controls what a run does: `fit_only` computes the statistics, `apply_only` reuses existing ones, `fit_and_apply` does both. The fit reads training files only — `fit_num_files_per_class` of them per class — and the statistics are then applied to all three splits, so val and test never influence the scale.
+
+### 4.5 Checking the output
+
+```bash
+# distributions from the .npy shards, raw or preprocessed
+python scripts/plot_features.py --base_dir <label>/preprocessed --output_dir plots/ \
+    --split train --max_files 5
+
+# the same variables in the source Parquet
+python scripts/parquet_plotter.py --input_dir <dataset_dir> --output_dir plots/parquet
+```
+
+Compare the two. After preprocessing a feature should sit around 0 with a spread of order 1; a column of exact zeros means a `topk` slot never filled, and a lone huge outlier usually means statistics fitted on too few files.
+
+### 4.6 Known limitations
+
+They matter most when you compare two runs, and they are why section 5 exists.
+
+- **Two different manifests.** The datamodule writes `split_manifest.json`, while `submit_vectorization_jobs.py` writes its own `split_manifest_global.json` and never reads the other. The local path and the batch path can pick different files for the same dataset.
+- **One RNG for all classes.** `make_split_manifest` shuffles every class with a single generator, in config order, with a seed fixed in the code. Add or remove a class and the files chosen for all the others change too.
+- **A class with few files loses splits.** Files are assigned whole and greedily, train first. A process with a single file puts it in train and leaves val and test empty.
+- **The loader ignores the manifest.** It takes whatever `_x.npy` it finds, splits the files across workers without regard for class, and caps each class at `ceil(N/num_workers)` events taken from the first rows. Change `num_workers` and you change the sample; the counts in the config are not honoured.
+- **The event check trusts the snapshot, not the data.** `has_enough_events` lists the shards on disk but takes their sizes from `file_event_counts.json`, so it never notices a short or truncated shard, and it raises `KeyError` on any file the snapshot does not know.
+- **A Parquet file that cannot be read is skipped.** The error is printed and vectorisation carries on, so a split can come out smaller than asked for while every job reports success. Read the logs, do not just check that they finished.
+- **Statistics are fitted on the first files alphabetically.** Deterministic, but not a random sample of the class.
+- **`src/train.py` vectorises on its own.** Running it with data missing starts the whole pipeline instead of stopping, which on the full dataset means a job that runs for days.
+- **The job scripts ignore command-line overrides.** `vectorize_job.py` and `preprocess_job.py` clear `sys.argv` before Hydra reads it, so `experiment=...` passed on the command line has no effect and the default experiment is used.
+
+---
+
+<!--
+  SECTIONS BELOW ARE THE ORIGINAL README AND ARE BEING REWRITTEN.
+  Next: section 5, the deterministic file selection; then training,
+  then extending the code.
+-->
 
 ### Training Iterations and GPU Usage
 If all the preprocessed files are ready, training can simply again be done with `src/train.py`, which will recognize the available files and skip vectorization and preprocessing. Training can also be submitted to compute nodes using the condor batch submission system via `condor_submit src/train_full_pipeline.sub`. Given the corresponding trainer setting, training on GPU is also supported locally and via condor submission. All condor submission logs will by default be saved in `logs/condor_logs`.
