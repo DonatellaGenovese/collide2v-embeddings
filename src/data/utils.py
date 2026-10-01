@@ -47,6 +47,18 @@ def compute_vlen(config: dict) -> int:
 # ============================================================
 
 
+def fill_masked(array: np.ndarray, fill: float) -> np.ndarray:
+    """A plain array, with masked entries replaced by the padding value.
+
+    `ak.to_numpy` returns a masked array when the Arrow field is nullable. The
+    columns on EOS are declared `not null`, so this never came up there, but a
+    Parquet file written anywhere else is nullable by default, and np.save then
+    fails with `MaskedArray.tofile() not implemented yet` — after the whole file
+    has been read.
+    """
+    return np.ma.filled(array, fill) if np.ma.isMaskedArray(array) else array
+
+
 def _pack_topk_batch(pt, *others, k: int, fill: float):
     """Picks top-k objects by first feature (e.g. pt).
 
@@ -69,7 +81,7 @@ def _pack_topk_batch(pt, *others, k: int, fill: float):
     fill_list = [fill] * n_features
     topk = ak.fill_none(topk, fill_list, axis=1)
 
-    return ak.to_numpy(topk)
+    return fill_masked(ak.to_numpy(topk), fill)
 
 
 def _pack_leading_batch(pt, *others, fill: float):
@@ -89,12 +101,27 @@ def _pack_leading_batch(pt, *others, fill: float):
     fill_list = [fill] * n_features
     leading = ak.fill_none(leading, fill_list, axis=1)
 
-    return ak.to_numpy(leading)
+    return fill_masked(ak.to_numpy(leading), fill)
 
 
 # ============================================================
 # BATCH VECTOR CONSTRUCTION
 # ============================================================
+
+
+def to_awkward_column(column):
+    """One Arrow column as an awkward array, with 32-bit list offsets widened.
+
+    The dataset on EOS stores these columns as `large_list`, whose offsets are
+    64-bit, and that is the only type this pipeline ever saw. A Parquet file
+    written by another tool — or by a test — may use `list` instead, and awkward
+    then fails inside argsort with `awkward_NumpyArray_rearrange_shifted` and a
+    tuple of dtypes for a message. Widening the offsets first costs nothing and
+    keeps both kinds of file readable.
+    """
+    if pa.types.is_list(column.type):
+        column = column.cast(pa.large_list(column.type.value_type))
+    return ak.from_arrow(column)
 
 
 def build_vectors_batch(batch: dict, config: dict, fill: float = 0.0) -> np.ndarray:
@@ -113,7 +140,10 @@ def build_vectors_batch(batch: dict, config: dict, fill: float = 0.0) -> np.ndar
 
         if topk is None:
             # scalars (e.g. MET)
-            vals = [ak.to_numpy(ak.fill_none(batch[c], fill)).reshape(-1, 1) for c in cols]
+            vals = [
+                fill_masked(ak.to_numpy(ak.fill_none(batch[c], fill)), fill).reshape(-1, 1)
+                for c in cols
+            ]
             group = np.concatenate(vals, axis=1)
 
         elif topk == 1:
@@ -140,12 +170,17 @@ def build_vectors_batch(batch: dict, config: dict, fill: float = 0.0) -> np.ndar
 # ============================================================
 
 
-def save_feature_map(config, out_dir: str, vlen: int):
-    """Save a feature_map.json describing flattened layout."""
+def build_feature_map_dict(config) -> dict:
+    """Where each group lands in the flat vector, from a datasets_config.
+
+    Takes a Hydra config or a plain dict: a plain dict is what a test, a notebook
+    or a script that does not go through Hydra has, and the function used to
+    accept only the former.
+    """
     feature_map = {}
     offset = 0
 
-    config_dict = OmegaConf.to_container(config, resolve=True)
+    config_dict = OmegaConf.to_container(config, resolve=True) if OmegaConf.is_config(config) else dict(config)
 
     for group_name, cfg in config_dict.items():
         cols = cfg["cols"]
@@ -167,6 +202,13 @@ def save_feature_map(config, out_dir: str, vlen: int):
             "count": count,
         }
         offset += size
+
+    return feature_map
+
+
+def save_feature_map(config, out_dir: str, vlen: int):
+    """Save a feature_map.json describing flattened layout."""
+    feature_map = build_feature_map_dict(config)
 
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "feature_map.json"), "w") as f:
@@ -563,7 +605,7 @@ def vectorize_to_local(
                     with pq.ParquetFile(path) as pqf:
                         for batch in pqf.iter_batches(columns=all_cols, batch_size=read_batch_size):
                             tbl = pa.Table.from_batches([batch])
-                            arrays = {col: ak.from_arrow(tbl[col]) for col in all_cols}
+                            arrays = {col: to_awkward_column(tbl[col]) for col in all_cols}
                             feats = build_vectors_batch(arrays, config, fill=0.0)
                             n = feats.shape[0]
                             all_feats.append(feats)

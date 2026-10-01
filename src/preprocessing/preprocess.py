@@ -11,6 +11,7 @@ import torch
 from omegaconf import OmegaConf
 
 from .utils import (
+    as_plain_dict,
     load_feature_map,
     build_expanded_feature_map,
     expand_feature_columns,
@@ -178,7 +179,8 @@ class PreprocessingPipeline:
             if not files:
                 print(f"⚠️ No files found for class '{cls}' at {pattern}")
                 continue
-            print(f"  • Class {cls}: using {len(files)} files for stats")
+            print(f"  • Class {cls}: using {len(files)} files for stats, "
+                  f"first alphabetically: {[os.path.basename(f) for f in files]}")
             for fpath in files:
                 X = self._load_raw_npy(fpath)           # [N, D_raw]
                 X_t = self._transform_only(X)           # [N, D_expanded]
@@ -394,7 +396,7 @@ class PreprocessingPipeline:
             }
 
         stats["_meta"] = {
-            "normalization_mode_per_feature_group": OmegaConf.to_container(self.feature_normalizations, resolve=True),
+            "normalization_mode_per_feature_group": as_plain_dict(self.feature_normalizations),
             "num_examples_fit": X.shape[0],
             "num_features_expanded": X.shape[1]
         }

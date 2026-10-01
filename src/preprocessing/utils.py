@@ -4,6 +4,8 @@ import json
 import re
 from collections import OrderedDict
 
+from omegaconf import OmegaConf
+
 ##########################################
 # Hardcoded Category Definitions
 ##########################################
@@ -49,6 +51,15 @@ PATTERN_TO_GROUP = [
     (r'_NCharged$', 'ncharged'),
     (r'_NNeutrals$', 'nneutrals'),
 ]
+
+def as_plain_dict(cfg) -> dict:
+    """A Hydra config or a plain dict, either way a plain dict.
+
+    The pipeline is also driven from scripts and tests that never go through
+    Hydra, where OmegaConf.to_container raises on what is already a dict.
+    """
+    return OmegaConf.to_container(cfg, resolve=True) if OmegaConf.is_config(cfg) else dict(cfg)
+
 
 def infer_group(feature_name: str) -> str:
     """Infer preprocessing group name from feature name using regex patterns."""
