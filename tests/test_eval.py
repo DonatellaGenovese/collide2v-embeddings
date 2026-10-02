@@ -8,6 +8,11 @@ from omegaconf import DictConfig, open_dict
 from src.eval import evaluate
 from src.train import train
 
+from tests.helpers.dataset_available import SKIP_REASON, dataset_is_available
+
+pytestmark = pytest.mark.skipif(not dataset_is_available(), reason=SKIP_REASON)
+
+
 
 @pytest.mark.slow
 def test_train_eval(tmp_path: Path, cfg_train: DictConfig, cfg_eval: DictConfig) -> None:

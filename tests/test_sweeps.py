@@ -5,6 +5,11 @@ import pytest
 from tests.helpers.run_if import RunIf
 from tests.helpers.run_sh_command import run_sh_command
 
+from tests.helpers.dataset_available import SKIP_REASON, dataset_is_available
+
+pytestmark = pytest.mark.skipif(not dataset_is_available(), reason=SKIP_REASON)
+
+
 startfile = "src/train.py"
 overrides = ["logger=[]"]
 

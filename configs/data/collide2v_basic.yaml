@@ -19,6 +19,10 @@ seed: ${oc.select:seed,42}
 #              produced before the per_class selection existed.
 manifest_strategy: per_class
 
+# Producing the dataset is a separate step: src/prepare_data.py sets this to true,
+# training leaves it false and stops if the data it needs is not there.
+allow_data_preparation: false
+
 preprocess: ${preprocess}
 
 

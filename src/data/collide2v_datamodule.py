@@ -77,6 +77,9 @@ class COLLIDE2VDataModule(LightningDataModule):
         process_to_folder: Optional[Dict[str, str]] = None,
         seed: int = 42,
         manifest_strategy: str = "per_class",
+        allow_data_preparation: bool = False,
+        event_counts_json: Optional[str] = None,
+        drop_empty_events: bool = False,
     ):
         """Initialize a `COLLIDE2VDataModule`.
 
@@ -100,6 +103,9 @@ class COLLIDE2VDataModule(LightningDataModule):
         self.process_to_folder = process_to_folder or {}
         self.seed = seed
         self.manifest_strategy = manifest_strategy
+        self.allow_data_preparation = allow_data_preparation
+        self.event_counts_json = event_counts_json
+        self.drop_empty_events = drop_empty_events
 
         self.vlen = compute_vlen(self.datasets_config)
 
@@ -128,7 +134,33 @@ class COLLIDE2VDataModule(LightningDataModule):
         `self.prepare_data_per_node()`.
 
         Do not use it to assign state (self.x = y).
+
+        Producing the data is not part of training. `allow_data_preparation` is
+        False here and True only in `src/prepare_data.py`, so a training run that
+        finds its dataset missing stops and says so, instead of starting a
+        vectorisation that on the full dataset takes days and would then hold the
+        GPU it was given.
         """
+        if has_enough_events(
+            self.paths["eos_preproc_dir"],
+            self.train_val_test_split_per_class,
+            self.classnames,
+            self.folder,
+        ):
+            print(f"🟢 Preprocessed data is in place at {self.paths['eos_preproc_dir']}")
+            return
+
+        if not self.allow_data_preparation:
+            raise RuntimeError(
+                f"The preprocessed dataset '{self.label}' is missing or incomplete in "
+                f"{self.paths['eos_preproc_dir']} (the lines above say which split and "
+                "class).\nProduce it first, then train:\n"
+                "  python src/prepare_data.py experiment=<your experiment>\n"
+                "or, for the full dataset, through the batch system:\n"
+                "  python scripts/submit_vectorization_jobs.py experiment=<your experiment>\n"
+                "  python scripts/submit_preprocessing_jobs.py experiment=<your experiment>\n"
+                "Set data.allow_data_preparation=true to prepare it from here instead."
+            )
 
         print(f"🟡 Generating vectorized data in {self.paths['eos_vec_dir']}")
         vectorize_to_local(

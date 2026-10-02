@@ -8,6 +8,11 @@ from omegaconf import DictConfig, open_dict
 from src.train import train
 from tests.helpers.run_if import RunIf
 
+from tests.helpers.dataset_available import SKIP_REASON, dataset_is_available
+
+pytestmark = pytest.mark.skipif(not dataset_is_available(), reason=SKIP_REASON)
+
+
 
 def test_train_fast_dev_run(cfg_train: DictConfig) -> None:
     """Run for 1 train, val and test step.
