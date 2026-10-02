@@ -1,0 +1,56 @@
+# The 20 variables that exist in both copies of COLLIDE-2V, on EOS and on Hugging
+# Face. Use this unless you need the nine that only EOS has: an experiment written
+# against it runs on either copy, which is what makes a result reproducible by someone
+# who does not have a CERN account.
+#
+# `collide2v_extended_eos` adds those nine. Everything else — the processes, the
+# splits, the seed, the preprocessing — is inherited from `collide2v_basic`.
+
+defaults:
+  - collide2v_basic
+
+datasets_config:
+  jets:
+    cols:
+      - FullReco_JetPuppiAK4_PT
+      - FullReco_JetPuppiAK4_Eta
+      - FullReco_JetPuppiAK4_Phi
+      - FullReco_JetPuppiAK4_Mass
+      - FullReco_JetPuppiAK4_BTag
+      - FullReco_JetPuppiAK4_NCharged
+    topk: 12
+    count: true
+
+  electrons:
+    cols:
+      - FullReco_Electron_PT
+      - FullReco_Electron_Eta
+      - FullReco_Electron_Phi
+      - FullReco_Electron_EhadOverEem
+      - FullReco_Electron_IsolationVarRhoCorr
+    topk: 8
+    count: false
+
+  muons:
+    cols:
+      - FullReco_MuonTight_PT
+      - FullReco_MuonTight_Eta
+      - FullReco_MuonTight_Phi
+      - FullReco_MuonTight_IsolationVarRhoCorr
+    topk: 8
+    count: false
+
+  photons:
+    cols:
+      - FullReco_PhotonTight_PT
+      - FullReco_PhotonTight_Eta
+      - FullReco_PhotonTight_Phi
+    topk: 8
+    count: false
+
+  puppi_met:
+    cols:
+      - FullReco_PUPPIMET_MET
+      - FullReco_PUPPIMET_Phi
+    topk: null   # scalar values
+    count: false

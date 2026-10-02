@@ -1,0 +1,75 @@
+# The 29 variables of the published study: the 20 in `collide2v_common` plus nine that
+# exist only in the copy on EOS.
+#
+#   FullReco_JetPuppiAK4_NNeutrals
+#   FullReco_Electron_Charge, _D0, _DZ
+#   FullReco_MuonTight_Charge, _D0, _DZ
+#   FullReco_PhotonTight_EhadOverEem, _IsolationVarRhoCorr
+#
+# Charge, D0 and DZ are per-object: the sign of the lepton, and how far its track
+# starts from the beam line, which is what makes a displaced decay visible. NNeutrals
+# is the neutral multiplicity inside a jet. A model trained on these cannot be run on
+# the Hugging Face copy at all, and a result obtained with them cannot be reproduced by
+# someone without a CERN account — which is the trade this file makes.
+#
+# Vectorisation checks the columns of the first file before it starts, so using this on
+# a Hugging Face download fails immediately, naming what is missing, rather than inside
+# a batch job.
+
+defaults:
+  - collide2v_basic
+
+datasets_config:
+  jets:
+    cols:
+      - FullReco_JetPuppiAK4_PT
+      - FullReco_JetPuppiAK4_Eta
+      - FullReco_JetPuppiAK4_Phi
+      - FullReco_JetPuppiAK4_Mass
+      - FullReco_JetPuppiAK4_BTag
+      - FullReco_JetPuppiAK4_NCharged
+      - FullReco_JetPuppiAK4_NNeutrals
+    topk: 12
+    count: true
+
+  electrons:
+    cols:
+      - FullReco_Electron_PT
+      - FullReco_Electron_Eta
+      - FullReco_Electron_Phi
+      - FullReco_Electron_Charge
+      - FullReco_Electron_EhadOverEem
+      - FullReco_Electron_IsolationVarRhoCorr
+      - FullReco_Electron_D0
+      - FullReco_Electron_DZ
+    topk: 8
+    count: false
+
+  muons:
+    cols:
+      - FullReco_MuonTight_PT
+      - FullReco_MuonTight_Eta
+      - FullReco_MuonTight_Phi
+      - FullReco_MuonTight_Charge
+      - FullReco_MuonTight_IsolationVarRhoCorr
+      - FullReco_MuonTight_D0
+      - FullReco_MuonTight_DZ
+    topk: 8
+    count: false
+
+  photons:
+    cols:
+      - FullReco_PhotonTight_PT
+      - FullReco_PhotonTight_Eta
+      - FullReco_PhotonTight_Phi
+      - FullReco_PhotonTight_EhadOverEem
+      - FullReco_PhotonTight_IsolationVarRhoCorr
+    topk: 8
+    count: false
+
+  puppi_met:
+    cols:
+      - FullReco_PUPPIMET_MET
+      - FullReco_PUPPIMET_Phi
+    topk: null   # scalar values
+    count: false

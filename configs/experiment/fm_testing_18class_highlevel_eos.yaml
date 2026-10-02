@@ -1,21 +1,28 @@
 # @package _global_
-
-# to execute this experiment run:
-# python train.py experiment=fm_testing
+#
+# The same 18 classes as fm_testing_18class_highlevel, with the nine extra variables
+# that only the copy on EOS has — this is the feature set of the published study.
+#
+# Use it when you work on EOS and want those variables; use the plain
+# fm_testing_18class_highlevel when you want an experiment that also runs on a Hugging
+# Face download. The two write to different `label`s, so both can exist side by side.
+#
+#   python src/prepare_data.py experiment=fm_testing_18class_highlevel_eos
+#   python src/train.py experiment=fm_testing_18class_highlevel_eos
 
 defaults:
-  - override /data: collide2v_common
+  - override /data: collide2v_extended_eos
   - override /callbacks: default
   - override /trainer: gpu
 
 # all parameters below will be merged with parameters from default configurations set above
 # this allows you to overwrite only specified parameters
 
-tags: ["collide2v", "tinyTransformer", "18class"]
+tags: ["collide2v", "tinyTransformer", "18class", "eos_only"]
 
 data:
   train_val_test_split_per_class: [1_000_000, 100_000, 100_000]
-  label: "v3_18class_common"
+  label: "v3_18class_eos"
   to_classify:
     - "QCD_inclusive"
     - "DY_to_ll"
