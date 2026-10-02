@@ -116,7 +116,7 @@ def write_fake_dataset(dataset_dir):
     return filelist
 
 
-def run_pipeline(root, dataset_dir, filelist, seed=3):
+def run_pipeline(root, dataset_dir, filelist, seed=3, drop_empty_events=False):
     """Vectorise, then preprocess, into `root`. Returns the paths it used."""
     paths = {
         "eos_vec_dir": os.path.join(root, "vectorized"),
@@ -146,6 +146,7 @@ def run_pipeline(root, dataset_dir, filelist, seed=3):
         split_counts=SPLITS,
         split_manifest=manifest,
         seed=seed,
+        drop_empty_events=drop_empty_events,
     )
     PreprocessingPipeline(
         paths=paths,
@@ -315,3 +316,35 @@ def test_preprocessing_widens_the_vector_as_the_feature_map_says(two_runs):
     assert done[x_name].shape[1] > raw[x_name].shape[1]
     assert done[x_name].shape[0] == raw[x_name].shape[0]
     assert np.isfinite(done[x_name]).all(), "preprocessing produced NaN or inf"
+
+
+def test_dropping_empty_events_removes_exactly_those(fake_dataset, tmp_path_factory):
+    """The filter is a physics choice, so what it removes is pinned by a test.
+
+    The fake files are written with some events holding no objects at all, which is
+    what the filter is for: with it off they are kept as all-zero rows, with it on they
+    are gone and nothing else is.
+    """
+    dataset_dir, filelist = fake_dataset
+    kept_root = str(tmp_path_factory.mktemp("with_empty"))
+    dropped_root = str(tmp_path_factory.mktemp("without_empty"))
+
+    run_pipeline(kept_root, dataset_dir, filelist, drop_empty_events=False)
+    run_pipeline(dropped_root, dataset_dir, filelist, drop_empty_events=True)
+
+    kept = shard_contents(kept_root, "vectorized")
+    dropped = shard_contents(dropped_root, "vectorized")
+    fm = json.load(open(os.path.join(kept_root, "vectorized", "feature_map.json")))
+    jet_pt_columns = [fm["jets"]["start"] + i * len(fm["jets"]["columns"])
+                      for i in range(fm["jets"]["topk"])]
+
+    total_empty = 0
+    for name, X in kept.items():
+        if not name.endswith("_x.npy"):
+            continue
+        empty = (X[:, jet_pt_columns] == 0).all(axis=1)
+        total_empty += int(empty.sum())
+        assert len(dropped[name]) == len(X) - int(empty.sum())
+        assert not (dropped[name][:, jet_pt_columns] == 0).all(axis=1).any()
+
+    assert total_empty > 0, "the fake dataset should contain events with no objects"

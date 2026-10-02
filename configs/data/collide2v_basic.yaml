@@ -29,6 +29,16 @@ allow_data_preparation: false
 # such as a subset downloaded from Hugging Face.
 event_counts_json: null
 
+# Drop events in which every jet, electron, muon and photon slot is empty.
+#
+# This is a physics choice, so it is off by default: the dataset then holds what the
+# generator produced. It is also very uneven — about 5% of QCD_HT50toInf against under
+# 0.5% of everything else, since QCD is generated with HT > 50 GeV and part of it has
+# nothing above the storage thresholds. QCD is the class an anomaly-detection model
+# calls "normal", so this filter decides the softest edge of what normal means. Turn it
+# on deliberately, give the dataset a new `label`, and say so when reporting results.
+drop_empty_events: false
+
 preprocess: ${preprocess}
 
 

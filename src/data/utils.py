@@ -506,7 +506,7 @@ def resolve_split_manifest(
             print(f"   • {folder}")
 
         if global_filelist is None:
-            global_filelist = load_global_filelist()
+            global_filelist = load_global_filelist(event_counts_json)
         manifest.update(
             make_split_manifest(
                 global_filelist=global_filelist,
@@ -525,6 +525,24 @@ def resolve_split_manifest(
 # ============================================================
 # VECTORIZE AND SAVE LOCALLY
 # ============================================================
+
+
+def filter_empty_events(X: np.ndarray, feature_map: dict) -> np.ndarray:
+    """Mask of the events that have at least one reconstructed object.
+
+    An event is empty when every object slot — jets, electrons, muons, photons — has
+    PT == 0. Only meaningful on raw vectorized data, where 0 still means padding.
+    """
+    keep = np.zeros(len(X), dtype=bool)
+    for cfg in feature_map.values():
+        topk = cfg.get("topk")
+        if topk is None:
+            continue  # a scalar group such as MET has no object slots
+        start = cfg["start"]
+        n_cols = len(cfg["columns"])
+        pt_cols = [start + i * n_cols for i in range(topk)]
+        keep |= (X[:, pt_cols] != 0.0).any(axis=1)
+    return keep
 
 
 def vectorize_to_local(
@@ -555,11 +573,28 @@ def vectorize_to_local(
 
     Each file in the manifest is converted into .npy shards under:
         eos_vec_dir/{train,val,test}/{class_folder}/...
+
+    `drop_empty_events` discards events in which every jet, electron, muon and photon
+    slot has PT == 0. It is a physics choice, not a technicality, and it is off by
+    default so that a dataset contains what the generator produced.
+
+    Which events it touches is very uneven: measured over the vectorisation logs of
+    the published study, about 5% of QCD_HT50toInf and under 0.5% of everything else.
+    QCD is generated with HT > 50 GeV, so a real fraction of it has nothing above the
+    storage thresholds — and QCD is also the class an anomaly-detection model is
+    trained on as "normal", so the filter decides the softest edge of what normal
+    means. Turn it on deliberately, and say so when reporting results.
+
+    Keeping them is safe for a classifier: the transformer applies no padding mask, so
+    an all-zero event still yields well-defined tokens from the projection bias and the
+    type embedding. It is not neutral for a contrastive objective, where every empty
+    event maps to the same point and both augmented views of it are identical.
     """
 
     os.makedirs(tmp_vec_dir, exist_ok=True)
     os.makedirs(eos_vec_dir, exist_ok=True)
     save_feature_map(config, eos_vec_dir, vlen)
+    _filter_fm = build_feature_map_dict(config)
 
     # -------------------------------------------------------------------------
     # Load or create manifest
@@ -641,6 +676,14 @@ def vectorize_to_local(
 
                 feats_cat = np.concatenate(all_feats, axis=0)
                 labels_cat = np.concatenate(all_labels, axis=0)
+
+                if drop_empty_events:
+                    keep = filter_empty_events(feats_cat, _filter_fm)
+                    removed = int((~keep).sum())
+                    if removed:
+                        print(f"  ⚠️  Dropped {removed}/{len(feats_cat)} events with no "
+                              f"reconstructed objects ({removed / len(feats_cat) * 100:.1f}%)")
+                    feats_cat, labels_cat = feats_cat[keep], labels_cat[keep]
 
                 local_x = os.path.join(tmp_split_dir, f"{base}_x.npy")
                 local_y = os.path.join(tmp_split_dir, f"{base}_y.npy")
