@@ -138,18 +138,35 @@ python src/train.py trainer=cpu                 # force CPU even on a GPU machin
 
 **Your own paths.** By default the shards are written under `data/` inside the repository, which is enough for a small dataset and is already in `.gitignore`; the Parquet files are read from the copy on EOS, which off lxplus does not exist. Rather than editing `configs/paths/fm_testing.yaml`, which everyone shares, put your own values in `configs/local/default.yaml`. Both `configs/train.yaml` and `configs/vectorize_preprocess.yaml` end their defaults list with `- optional local: default`, so Hydra loads that file when it exists and carries on when it does not, and `.gitignore` already lists it, so your settings are never committed and never collide with anyone else's:
 
+Three paths matter, and the names of two of them are historical: `eos_data_dir` is simply where the shards are written and read, `tmp_data_dir` the scratch space used while writing them, and neither has to be on EOS.
+
+**On lxplus**, put the shards in your EOS user area, which has room for them, and the scratch space on AFS work. Your AFS home does not: it has a 10 GB quota, and a real dataset is hundreds of gigabytes.
+
+```yaml
+# @package _global_
+# configs/local/default.yaml — replace <l> with the first letter of your username
+paths:
+  # dataset_dir already points at the shared copy on EOS, so it is not repeated here
+  eos_data_dir: /eos/user/<l>/<username>/collide2v_data
+  tmp_data_dir: /afs/cern.ch/work/<l>/<username>/collide2v/tmp
+```
+
+Batch jobs ignore `tmp_data_dir` and write their scratch to the node's own `$TMPDIR`, which is local disk and much faster; the value above is what a run on the login node uses.
+
+**On your own machine**, both are ordinary directories, and `dataset_dir` is where you put the files downloaded from Hugging Face:
+
 ```yaml
 # @package _global_
 paths:
-  dataset_dir: /home/you/data/collide          # where the Parquet files are
-  tmp_data_dir: /home/you/data/collide2v/tmp   # scratch space for vectorisation
-  eos_data_dir: /home/you/data/collide2v       # where the .npy shards end up
+  dataset_dir: /home/you/data/collide
+  eos_data_dir: /home/you/data/collide2v
+  tmp_data_dir: /home/you/data/collide2v/tmp
 
 data:
-  num_workers: 4                               # a sane value for a laptop
+  num_workers: 4          # a sane value for a laptop
 ```
 
-The names `eos_data_dir` and `tmp_data_dir` are historical and have nothing to do with EOS: they are simply the output directory and the scratch directory. For a one-off they also read the environment, as `COLLIDE_DATASET_DIR`, `COLLIDE_DATA_DIR` and `COLLIDE_TMP_DIR`, but a file you can read back later is the better record of what a run used.
+For a one-off, the three also read the environment, as `COLLIDE_DATASET_DIR`, `COLLIDE_DATA_DIR` and `COLLIDE_TMP_DIR`, but a file you can read back later is the better record of what a run used.
 
 ### Two things that are easy to miss
 
@@ -429,13 +446,17 @@ The sample is decided once, in the main process, as a plan of which rows of whic
 
 Each split draws with its own seed, so `val` does not take the same rows of the same shards as `train`.
 
-### 5.4 One more choice: empty events
+### 5.4 Empty events
 
-Some events have no reconstructed object at all — every jet, electron, muon and photon slot empty. `data.drop_empty_events`, off by default, removes them during vectorisation.
+Some events reach the file with nothing reconstructed in them: no jet, no electron, no muon, no photon above the thresholds at which objects are stored. Vectorised, such an event is a row of zeros. `data.drop_empty_events` decides whether those rows are written at all; it is off by default, so they are.
 
-Treat it as physics, not as a flag. It is uneven: about 5% of `QCD_HT50toInf` against under 0.5% of everything else, because QCD is generated with HT > 50 GeV and part of it leaves nothing above the storage thresholds. QCD is also the class an anomaly-detection model is trained on as "normal", so this setting decides the softest edge of what normal means. Keeping those events is harmless for a classifier; for a contrastive objective it puts every empty event on the same point, and makes both augmented views of one identical.
+It belongs in this section because it changes what the dataset contains, so it is part of what identifies one, like the seed. And because it acts during vectorisation, changing your mind means vectorising again, into a new `label` — it cannot be switched at training time.
 
-The datasets behind the published study were built with it on — that is the `nosparse` in their labels.
+**How many events it concerns:** about 5% of `QCD_HT50toInf`, and under 0.5% of everything else. QCD is generated with HT > 50 GeV, so a real fraction of it leaves nothing above the storage thresholds; the other processes nearly always produce something.
+
+**When to turn it on.** For a contrastive model: every empty event is the same point, both augmented views of it are identical, and a block of duplicate samples is exactly what those objectives are sensitive to. Also when rebuilding the datasets behind the published study, which were produced with it on — that is the `nosparse` in their labels.
+
+**When to leave it off.** For a classifier, which handles a row of zeros without trouble, and whenever you want the dataset to be what the generator produced. Note that QCD is also the class an anomaly-detection model is trained on as "normal", so this choice moves the soft edge of what it considers normal: say which way you set it when you report a result.
 
 ### 5.5 Reproducing a dataset
 
