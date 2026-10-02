@@ -34,11 +34,11 @@ Parquet files          .npy shards            .npy shards           model
 ### What you can do with it
 
 - **Supervised classification**, inherited from the original repository: a small MLP and a small transformer that classify events by physics process.
-- **Contrastive learning** (in progress): two worked examples, SimCLR, which uses no labels at all, and SupCon, which uses them only to decide which events should end up close together. 
+- **Contrastive learning** (in progress): two worked examples, SimCLR, which uses no labels at all, and SupCon, which uses them only to decide which events should end up close together.
 
 ### Where the code comes from
 
-This repository starts as a copy of [pploner/foundation_model_testing](https://github.com/pploner/foundation_model_testing) at commit `13448e6`, written by Philip Ploner. The entire commit history up to that point is his work, and the vectorisation, preprocessing and classification code described below is his design. 
+This repository starts as a copy of [pploner/foundation_model_testing](https://github.com/pploner/foundation_model_testing) at commit `13448e6`, written by Philip Ploner. The entire commit history up to that point is his work, and the vectorisation, preprocessing and classification code described below is his design.
 
 It follows the [lightning-hydra-template](https://github.com/ashleve/lightning-hydra-template): PyTorch Lightning for the training loop, Hydra for the configuration. If a config file or a directory looks unfamiliar, that template's README explains the convention.
 
@@ -116,6 +116,7 @@ source .venv/bin/activate       # on Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
 pytest -k "not slow"            # a first check that the environment is sane
+pre-commit run --all-files      # the formatting checks CI runs on every push
 ```
 
 Conda works as well as `venv`, and if the machine already has Apptainer or Docker you can build the same container as on lxplus from `fm_testing.def` and skip the environment entirely. Whatever you choose, the point is that `import torch, lightning, hydra` works and `pytest` runs.
@@ -171,7 +172,7 @@ HH_4b/HH_4b-NEVENT10000-RS20000001.parquet
 
 `NEVENT10000` is what was requested from the generator, not necessarily what the file contains: the file above holds 9,993 events. Always take the count from the file, never from its name.
 
-Each row is one collision event. Each column is one property of one kind of object, stored as a list when the object can appear several times per event. 
+Each row is one collision event. Each column is one property of one kind of object, stored as a list when the object can appear several times per event.
 
 Column names have three parts, `<level>_<object>_<variable>`, and the level matters:
 
@@ -191,7 +192,7 @@ Column names have three parts, `<level>_<object>_<variable>`, and the level matt
 
 53 process folders, from single Higgs to top quarks to QCD multijets, several hundred million events in total. This is the complete dataset and the one all published results so far were produced with. It is readable from lxplus and from batch nodes, and it is far too large to copy.
 
-The mapping from the process names used in the configs to these folder names is in `configs/data/collide2v_basic.yaml`, under `process_to_folder`. 
+The mapping from the process names used in the configs to these folder names is in `configs/data/collide2v_basic.yaml`, under `process_to_folder`.
 
 ### The copy on Hugging Face
 
