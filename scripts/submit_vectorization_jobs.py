@@ -89,6 +89,7 @@ def main(cfg: DictConfig):
         split_counts=split_counts,
         seed=data_cfg.get("seed", cfg.get("seed", 42)),
         strategy=data_cfg.get("manifest_strategy", "per_class"),
+        event_counts_json=data_cfg.get("event_counts_json", None),
     )
     check_shards_match_manifest(str(EOS_VEC_DIR), manifest)
 

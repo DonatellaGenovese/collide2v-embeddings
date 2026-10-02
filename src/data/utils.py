@@ -230,14 +230,32 @@ def move_to_eos(local_dir: str, eos_dir: str):
     except Exception as e:
         print(f"⚠️ Move failed: {e}")
 
-def load_global_filelist() -> dict:
-    """Load the precomputed file event counts JSON from nEvents_scan."""
-    base_path = Path("/afs/.cern.ch/work/p/phploner/foundation_model_testing/src/utils/nEvents_scan/file_event_counts.json")
+DEFAULT_EVENT_COUNTS_JSON = (
+    Path(__file__).resolve().parents[1] / "utils" / "nEvents_scan" / "file_event_counts.json"
+)
+
+
+def load_global_filelist(path=None) -> dict:
+    """{folder: {parquet file: events}}, used to plan the splits.
+
+    Defaults to the copy shipped with the repository, found relative to this file,
+    so it works from any checkout and any working directory. It used to be an
+    absolute path into one person's AFS work area, which no one else could read.
+
+    `path` — `data.event_counts_json` in the config — points somewhere else, which
+    is what a dataset the shipped snapshot does not cover needs; regenerate one with
+    `src/utils/nEvents_scan/scan_parquet_nevent.py`.
+    """
+    base_path = Path(path) if path else DEFAULT_EVENT_COUNTS_JSON
     if not base_path.exists():
-        raise FileNotFoundError(f"Global file list not found: {base_path}")
+        raise FileNotFoundError(
+            f"Event-count file not found: {base_path}\n"
+            "Point `data.event_counts_json` at one, or regenerate it with "
+            "src/utils/nEvents_scan/scan_parquet_nevent.py."
+        )
     with open(base_path) as f:
         data = json.load(f)
-    print(f"🟢 Loaded global file list ({sum(len(v) for v in data.values())} files) from {base_path}")
+    print(f"🟢 Loaded event counts for {sum(len(v) for v in data.values())} files from {base_path}")
     return data
 
 def class_seed(folder: str, seed: int) -> int:
@@ -454,6 +472,7 @@ def resolve_split_manifest(
     seed: int = 42,
     strategy: str = "per_class",
     global_filelist: dict | None = None,
+    event_counts_json=None,
 ) -> dict:
     """The one way a manifest is obtained: reuse the stored one, or build it.
 
@@ -524,6 +543,8 @@ def vectorize_to_local(
     parallel_processing: bool = False,
     seed: int = 42,
     manifest_strategy: str = "per_class",
+    event_counts_json=None,
+    drop_empty_events: bool = False,
 ):
     """Vectorize Parquet shards using a deterministic split manifest.
 
@@ -554,6 +575,7 @@ def vectorize_to_local(
             split_counts=split_counts,
             seed=seed,
             strategy=manifest_strategy,
+            event_counts_json=event_counts_json,
         )
         check_shards_match_manifest(eos_vec_dir, split_manifest)
 

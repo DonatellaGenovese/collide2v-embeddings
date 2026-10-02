@@ -27,6 +27,8 @@ logger:
 
 tags: ["dev"]
 
-# passing checkpoint path is necessary for evaluation
-ckpt_path: /afs/cern.ch/work/p/phploner/foundation_model_testing/logs/train/multiruns/2026-01-31_16-02-51/10/checkpoints/epoch_047.ckpt
+# The checkpoint to evaluate. There is no sensible default — it used to point at one
+# run in one person's home directory — so pass it on the command line:
+#   python src/eval.py ckpt_path=logs/train/runs/<date>/checkpoints/<file>.ckpt
+ckpt_path: ???
 use_trial_config: true

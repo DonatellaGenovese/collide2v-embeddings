@@ -10,8 +10,10 @@ echo "[`date`] Running as $(whoami)"
 echo "Working directory: $(pwd)"
 
 # --- Paths ---
-PROJECT_DIR=/afs/cern.ch/work/p/phploner/foundation_model_testing
-IMAGE=${PROJECT_DIR}/fm_testing.sif
+# The project is wherever this script is, unless told otherwise; the image is about
+# 9 GB and often lives outside the repository, hence FM_TESTING_IMAGE.
+PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+IMAGE="${FM_TESTING_IMAGE:-${PROJECT_DIR}/fm_testing.sif}"
 
 SEED="${HYDRA_SEED:-24}"
 

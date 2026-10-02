@@ -23,6 +23,12 @@ manifest_strategy: per_class
 # training leaves it false and stops if the data it needs is not there.
 allow_data_preparation: false
 
+# Where the per-file event counts live. null uses the copy in the repository,
+# src/utils/nEvents_scan/file_event_counts.json, which covers the EOS production as
+# scanned at the time. Point it elsewhere for a dataset that snapshot does not list,
+# such as a subset downloaded from Hugging Face.
+event_counts_json: null
+
 preprocess: ${preprocess}
 
 

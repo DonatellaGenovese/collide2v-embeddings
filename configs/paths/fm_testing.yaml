@@ -3,14 +3,25 @@
 # you can replace it with "." if you want the root to be the current working directory
 root_dir: ${oc.env:PROJECT_ROOT}
 
-# path to dataset directory
-dataset_dir: /eos/project/f/foundational-model-dataset/samples/production_final
+# Where the COLLIDE-2V Parquet files are read from. The default is the copy on EOS,
+# readable from lxplus and from batch nodes. Off lxplus, point this at the files you
+# downloaded from Hugging Face.
+dataset_dir: ${oc.env:COLLIDE_DATASET_DIR,/eos/project/f/foundational-model-dataset/samples/production_final}
 
-# path to tmp data directory for writing vectorized and preprocessed data
-tmp_data_dir: /afs/cern.ch/work/p/phploner/foundation_model_testing/data
+# Scratch space for vectorisation and preprocessing: shards are written here and then
+# moved to `eos_data_dir`. On a batch node this should be local disk.
+tmp_data_dir: ${oc.env:COLLIDE_TMP_DIR,${paths.root_dir}/data/tmp}
 
-# path to eos data directory for storing vectorized and preprocessed data
-eos_data_dir: /eos/user/p/phploner/foundation_model_testing_data
+# Where the .npy shards end up and are read from during training. The name is
+# historical: it does not have to be on EOS, and off lxplus it is simply a directory.
+#
+# Both default under the repository so that a small dataset works with no setup, and
+# `data/` is already in .gitignore. A real dataset is hundreds of gigabytes and does
+# not belong there: give it somewhere with room, either through these environment
+# variables or, better, in configs/local/default.yaml, which Hydra loads if it exists
+# and Git ignores. On lxplus that means /eos/user/<letter>/<user>/... , not an AFS
+# home directory with a 10 GB quota.
+eos_data_dir: ${oc.env:COLLIDE_DATA_DIR,${paths.root_dir}/data}
 
 # path to logging directory
 log_dir: ${paths.root_dir}/logs/

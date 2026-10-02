@@ -1,7 +1,7 @@
 executable = find_unique_pids.sh
-output     = /afs/cern.ch/work/p/phploner/foundation_model_testing/logs/find_unique_pids.out
-error      = /afs/cern.ch/work/p/phploner/foundation_model_testing/logs/find_unique_pids.err
-log        = /afs/cern.ch/work/p/phploner/foundation_model_testing/logs/find_unique_pids.log
+output     = logs/find_unique_pids.out
+error      = logs/find_unique_pids.err
+log        = logs/find_unique_pids.log
 
 universe = vanilla
 

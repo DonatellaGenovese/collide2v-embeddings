@@ -6,9 +6,9 @@ executable = src/wrapper_eval.sh
 arguments  = $(ClusterId)
 
 # --- Logs ---
-output = /afs/cern.ch/work/p/phploner/foundation_model_testing/logs/condor_logs/job_$(ClusterId).out
-error  = /afs/cern.ch/work/p/phploner/foundation_model_testing/logs/condor_logs/job_$(ClusterId).err
-log    = /afs/cern.ch/work/p/phploner/foundation_model_testing/logs/condor_logs/job_$(ClusterId).log
+output = logs/condor_logs/job_$(ClusterId).out
+error  = logs/condor_logs/job_$(ClusterId).err
+log    = logs/condor_logs/job_$(ClusterId).log
 
 # --- Run job as your CERN user (needed for EOS writes) ---
 run_as_owner = True
@@ -17,7 +17,9 @@ run_as_owner = True
 +JobFlavour = "longlunch"
 
 # --- Environment ---
-getenv = True
+# getenv = False: the job gets the environment set below and nothing else, so it
+# does not depend on the shell it was submitted from.
+getenv = False
 request_cpus = 6
 request_gpus = 1
 

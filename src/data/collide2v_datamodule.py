@@ -176,6 +176,7 @@ class COLLIDE2VDataModule(LightningDataModule):
             split_counts=self.train_val_test_split_per_class,
             seed=self.seed,
             manifest_strategy=self.manifest_strategy,
+            event_counts_json=self.event_counts_json,
             read_batch_size=512,
         )
 
