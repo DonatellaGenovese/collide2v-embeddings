@@ -63,7 +63,7 @@ It follows the [lightning-hydra-template](https://github.com/ashleve/lightning-h
 | Vectorisation and preprocessing | Working. What still bites is listed in section 4.6. |
 | tinyMLP, tinyTransformer classifiers | Working. |
 | Reading the dataset from EOS | Working. |
-| Reading a Hugging Face download | Should work: point `paths.dataset_dir` at the files and give `data.event_counts_json` a scan of them. Untested, and `huggingface_hub` is not in `requirements.txt` yet. See section 3. |
+| Reading a Hugging Face download | The default feature set is the one both copies have, and the columns are checked before a job starts. Still needs `paths.dataset_dir` pointed at the files and `data.event_counts_json` given a scan of them; `huggingface_hub` is not in `requirements.txt` yet, and none of it is tested. See section 3. |
 | Contrastive models, augmentations, probes | To be added. |
 | Reproducible file and event selection | Working, and tested without EOS. See section 5. |
 
@@ -262,7 +262,7 @@ MuonTight_Charge, MuonTight_D0, MuonTight_DZ
 PhotonTight_EhadOverEem, PhotonTight_IsolationVarRhoCorr
 ```
 
-The consequence for this repository: the **default feature configuration will use only the 20 variables present in both copies**, so that the same experiment definition runs on either, and an optional "extended EOS" configuration will add the other nine. Vectorisation will check the columns of the first file before starting, and fail with a clear message naming the missing ones, rather than crashing halfway through a batch job. Both are part of the work described in the next sections.
+The consequence for this repository: **the default feature set is the 20 variables both copies have**, `configs/data/collide2v_common.yaml`, so the same experiment definition runs on either. `collide2v_extended_eos.yaml` adds the other nine and only works on EOS. Vectorisation reads the schema of one file per class before it starts, so asking for a column the data does not have fails immediately, naming it, instead of inside a batch job.
 
 ### Inspecting the files yourself
 
@@ -281,13 +281,22 @@ print([c for c in pf.schema_arrow.names if "MuonTight" in c])
 
 ## 4. Vectorisation and preprocessing
 
-This section describes the pipeline as inherited from the original repository. Both stages are driven by `configs/vectorize_preprocess.yaml`, which pulls in a `data`, a `preprocess` and an `experiment` config. Read section 4.6 before launching anything large.
+Both stages are driven by `configs/vectorize_preprocess.yaml`, which pulls in a `data`, a `preprocess` and an `experiment` config. Read section 4.6 before launching anything large.
 
 The convention is to leave the base configs alone and put everything specific to your study in one file under `configs/experiment/`, selected with `experiment=<name>`. That file is then the whole description of what you ran.
 
 ### 4.1 Choosing the features
 
-`datasets_config` lists the columns to read, grouped by object type:
+Two feature sets come with the repository, and an experiment picks one with `override /data:` in its defaults list:
+
+| Data config | Columns | Where it runs |
+| --- | --- | --- |
+| `collide2v_common` | 20 | EOS and Hugging Face. The default. |
+| `collide2v_extended_eos` | 29 | EOS only. The feature set of the published study: it adds the neutral multiplicity of jets, and the charge, D0 and DZ of electrons and muons, and the hadronic fraction and isolation of photons. |
+
+`fm_testing_18class_highlevel` uses the first, `fm_testing_18class_highlevel_eos` the second, and they write to different `label`s so both datasets can exist side by side.
+
+Either way, `datasets_config` is what lists the columns, grouped by object type:
 
 ```yaml
 jets:
@@ -422,6 +431,7 @@ Files are assigned whole, and a split stops as soon as it holds the events asked
 - **An existing manifest is never rewritten.** It is reused as it is, and only *extended*, with classes it does not yet cover.
 - **A run that does not match it stops.** Change the seed, the strategy or the split sizes of a dataset that already exists and the run refuses, naming both values, and tells you to use a new `data.label`. The shards on disk were chosen by the stored settings; mixing in files drawn differently would leave one directory holding two samples.
 - **Shards the manifest does not list stop the run too.** For a dataset built before the manifest recorded its metadata this is a warning instead, since those predate the rule.
+- **The columns are fixed as well.** The manifest says which files a dataset holds, not which features were taken from them, so `feature_map.json` is compared too: change `datasets_config` and keep the `label`, and the run stops rather than adding shards of a different width — or, worse, the same width with different columns in them.
 
 ### 5.2 Seeds
 
