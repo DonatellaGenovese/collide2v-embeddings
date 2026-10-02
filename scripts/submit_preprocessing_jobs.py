@@ -12,6 +12,7 @@ import rootutils
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
 import json
 import subprocess
+import sys
 import hydra
 from math import ceil
 from pathlib import Path
@@ -29,6 +30,19 @@ JOB_FLAVOUR = "tomorrow"  # ~24h jobs
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 WRAPPER_SCRIPT = PROJECT_DIR / "src/preprocessing/wrapper_preprocess.sh"
 LOG_DIR = PROJECT_DIR / "logs/condor_logs/preprocessing"
+
+def experiment_override() -> str:
+    """The `experiment=` the user typed, so the jobs run the same one.
+
+    Hydra has already consumed it into the composed config by the time this runs, and
+    the composed config does not say which experiment file it came from, so it is read
+    back from the command line. Empty means the jobs use the config default.
+    """
+    for arg in sys.argv[1:]:
+        if arg.startswith("experiment="):
+            return arg.split("=", 1)[1]
+    return ""
+
 
 # -----------------------------------------------------------------------------
 # MAIN
@@ -123,7 +137,7 @@ def main(cfg: DictConfig):
         start = i * MAX_FILES_PER_JOB
         end = start + MAX_FILES_PER_JOB
         chunk = entries[start:end]
-        submit_job(i, chunk)
+        submit_job(i, chunk, experiment_override())
 
     print("\n✅ All preprocessing jobs submitted.")
 
@@ -131,7 +145,7 @@ def main(cfg: DictConfig):
 # -----------------------------------------------------------------------------
 # FUNCTION TO SUBMIT A SINGLE JOB
 # -----------------------------------------------------------------------------
-def submit_job(job_idx, chunk):
+def submit_job(job_idx, chunk, experiment=""):
     # Build submanifest structure
     submanifest = {}
     for folder, split, fname in chunk:
@@ -150,21 +164,29 @@ def submit_job(job_idx, chunk):
 
     submit_content = f"""\
 executable = {WRAPPER_SCRIPT}
-arguments  = {manifest_path} {PROJECT_DIR}
+arguments  = {manifest_path} {PROJECT_DIR} {experiment}
 initialdir = {LOG_DIR}
 
 output = {log_out}
 error  = {log_err}
 log    = {log_log}
 
-stream_output = True
-stream_error = True
+# No stream_output/stream_error: the CERN schedd refuses the whole submission
+# ("stream_out and stream_err are no longer supported"), and it refuses it at commit
+# time, so condor_submit -dry-run accepts the file and only a real submit fails.
+# The logs above are written when the job ends.
 
 run_as_owner = True
 +JobFlavour = "{JOB_FLAVOUR}"
-getenv = True
+
+# getenv = False: the job gets the environment set here and nothing else. Shipping
+# the submitting shell's environment makes a job depend on the terminal it was sent
+# from — a stray PYTHONPATH or CONDA_PREFIX is enough to change what runs — and the
+# wrapper calls apptainer with --cleanenv anyway. apptainer lives in /usr/bin, which
+# the default PATH covers.
+getenv = False
 request_cpus = 4
-environment = "WRAPPER_DEBUG=1; OMP_NUM_THREADS=4; MKL_NUM_THREADS=4"
+environment = "OMP_NUM_THREADS=4; MKL_NUM_THREADS=4"
 
 queue
 """
@@ -173,7 +195,10 @@ queue
     with open(sub_path, "w") as f:
         f.write(submit_content)
 
-    subprocess.run(["condor_submit", str(sub_path)], check=False)
+# check=True: a rejected submission used to be reported by condor_submit and then
+    # ignored here, so a loop could print "submitted" for hundreds of jobs that never
+    # existed.
+    subprocess.run(["condor_submit", str(sub_path)], check=True)
     print(f"🚀 Submitted job {job_idx:04d} ({len(chunk)} files)")
 
 if __name__ == "__main__":

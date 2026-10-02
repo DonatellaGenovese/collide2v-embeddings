@@ -28,8 +28,20 @@ args, _ = parser.parse_known_args()
 # Make manifest path absolute now (before Hydra may change cwd)
 args.manifest_path = os.path.abspath(args.manifest_path)
 
-# ⚠️ Prevent Hydra from seeing our CLI arguments
-sys.argv = [sys.argv[0]]
+# Hide --manifest-path from Hydra, but keep everything else: clearing sys.argv
+# entirely meant `experiment=...` on the command line was silently ignored and the
+# job ran with whatever experiment the config happened to default to.
+filtered = [sys.argv[0]]
+i = 1
+while i < len(sys.argv):
+    if sys.argv[i] == "--manifest-path":
+        i += 2  # the flag and its value
+    elif sys.argv[i].startswith("--manifest-path="):
+        i += 1
+    else:
+        filtered.append(sys.argv[i])
+        i += 1
+sys.argv = filtered
 
 
 @hydra.main(version_base="1.3", config_path="../../configs", config_name="vectorize_preprocess.yaml")
