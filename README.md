@@ -290,18 +290,27 @@ The rest of the configuration:
 
 ### 4.2 Running it
 
-On the batch system the two stages are separate scripts, and the second needs the first to be finished:
+**Producing a dataset is its own command**, and training does not do it: a run that finds its data missing stops and tells you this. Vectorising the full dataset takes days, and a training job that started doing it would spend its GPU allocation on that.
+
+For a dataset small enough to build on one machine — a few files per class, which is the normal case off lxplus:
+
+```bash
+python src/prepare_data.py experiment=<name>
+python src/prepare_data.py experiment=<name> data.label=my_small_test   # a separate one
+```
+
+For the full dataset, send the work to HTCondor. The second stage needs the first to be finished:
 
 ```bash
 # from the project directory on AFS, with the container available
-python scripts/submit_vectorization_jobs.py    # ≤50 files per job
-condor_q                                       # wait until empty
-python scripts/submit_preprocessing_jobs.py    # fits the stats, then submits
+python scripts/submit_vectorization_jobs.py experiment=<name>    # ≤50 files per job
+condor_q                                                        # wait until empty
+python scripts/submit_preprocessing_jobs.py experiment=<name>    # fits the stats, then submits
 ```
 
-Logs and per-job manifests land in `logs/condor_logs/`. Both scripts are idempotent: files already produced are skipped, so rerunning them submits only what is missing. Both read the same `split_manifest.json` as the datamodule, so the batch path and a local run cannot disagree about which files the dataset contains.
+Pass the same `experiment=` to both, and to the training that follows: it reaches the jobs, so they build the dataset you asked for rather than the one the config happens to default to.
 
-There is no standalone command for a local run yet. Locally the two stages happen inside `src/train.py`, which calls them through the datamodule before training.
+Logs and per-job manifests land in `logs/condor_logs/`. Both scripts are idempotent: files already produced are skipped, so rerunning them submits only what is missing. Both routes read and write the same `split_manifest.json`, so a local run and the batch system cannot disagree about which files the dataset contains.
 
 ### 4.3 What lands on disk
 
@@ -367,9 +376,8 @@ Compare the two. After preprocessing a feature should sit around 0 with a spread
 ### 4.6 What still bites
 
 - **A Parquet file that cannot be read is skipped.** The error is printed and vectorisation carries on, so a split can come out smaller than asked for while every job reports success. Read the logs, do not just check that they finished.
-- **`src/train.py` vectorises on its own.** Running it with data missing starts the whole pipeline instead of stopping, which on the full dataset means a job that runs for days. Produce the data with the submission scripts first.
-- **The job scripts ignore command-line overrides.** `vectorize_job.py` and `preprocess_job.py` clear `sys.argv` before Hydra reads it, so `experiment=...` on the command line has no effect and the default experiment is used. Change the default in `configs/vectorize_preprocess.yaml` instead.
-- **The default paths are CERN paths.** `configs/paths/fm_testing.yaml` points at one person's EOS directories. Override them in `configs/local/default.yaml`, as section 2 describes.
+- **The output paths default under the repository.** Small datasets are fine there, hundreds of gigabytes are not: set them in `configs/local/default.yaml`, as section 2 describes.
+- **Seven experiment configs no longer compose.** They override a data config that was removed: `fm_testing_binary.yaml` wants `collide2v_all_features`, and the six `fm_testing_selected_features_*` under `archive/` want `collide2v_emptyDatasetConfig`. Start from `fm_testing_18class_highlevel.yaml` instead.
 - **Checking a dataset reads every shard header.** `has_enough_events` and the loader both open one file per shard, which on EOS costs about a minute and a half for a twelve-class dataset. It is paid once at startup.
 
 ## 5. Which files a dataset is made of
@@ -417,13 +425,21 @@ The sample is decided once, in the main process, as a plan of which rows of whic
 
 Each split draws with its own seed, so `val` does not take the same rows of the same shards as `train`.
 
-### 5.4 Reproducing a dataset
+### 5.4 One more choice: empty events
 
-Keep the `label`, the `seed`, the strategy and the split sizes, and you get the same files and the same events. Change any of them and give the dataset a new `label`: that is the one rule the rest depends on.
+Some events have no reconstructed object at all — every jet, electron, muon and photon slot empty. `data.drop_empty_events`, off by default, removes them during vectorisation.
+
+Treat it as physics, not as a flag. It is uneven: about 5% of `QCD_HT50toInf` against under 0.5% of everything else, because QCD is generated with HT > 50 GeV and part of it leaves nothing above the storage thresholds. QCD is also the class an anomaly-detection model is trained on as "normal", so this setting decides the softest edge of what normal means. Keeping those events is harmless for a classifier; for a contrastive objective it puts every empty event on the same point, and makes both augmented views of one identical.
+
+The datasets behind the published study were built with it on — that is the `nosparse` in their labels.
+
+### 5.5 Reproducing a dataset
+
+Keep the `label`, the `seed`, the strategy, the split sizes and `drop_empty_events`, and you get the same files and the same events. Change any of them and give the dataset a new `label`: that is the one rule the rest depends on.
 
 To rebuild a dataset produced before all this, point the config at its directory and its stored manifest is used as it is. If it has no `_meta`, the run says so and uses it anyway.
 
-### 5.5 Checking it yourself
+### 5.6 Checking it yourself
 
 ```bash
 pytest tests/test_pipeline_determinism.py   # writes its own fake Parquet files, no EOS needed
