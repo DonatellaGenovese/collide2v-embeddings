@@ -63,7 +63,7 @@ It follows the [lightning-hydra-template](https://github.com/ashleve/lightning-h
 | Vectorisation and preprocessing | Working. What still bites is listed in section 4.6. |
 | tinyMLP, tinyTransformer classifiers | Working. |
 | Reading the dataset from EOS | Working. |
-| Reading the dataset from Hugging Face | Not yet supported. See section 3. |
+| Reading a Hugging Face download | Should work: point `paths.dataset_dir` at the files and give `data.event_counts_json` a scan of them. Untested, and `huggingface_hub` is not in `requirements.txt` yet. See section 3. |
 | Contrastive models, augmentations, probes | To be added. |
 | Reproducible file and event selection | Working, and tested without EOS. See section 5. |
 
@@ -86,12 +86,15 @@ cd collide2v-embeddings
 
 # 2. Build the container. It installs everything in requirements.txt.
 #    Expect a few minutes and a .sif file of about 9 GB: your AFS home directory
-#    has a 10 GB quota, so build it under /afs/cern.ch/work/... or on EOS instead,
-#    and point the wrapper scripts at it.
-apptainer build fm_testing.sif fm_testing.def
+#    has a 10 GB quota, so build it under /afs/cern.ch/work/... or on EOS, and tell
+#    the wrapper scripts where it is with FM_TESTING_IMAGE. The build cache lives in
+#    ~/.apptainer and fills that quota too; APPTAINER_CACHEDIR moves it.
+export APPTAINER_CACHEDIR=/afs/cern.ch/work/<letter>/<user>/.apptainer
+export FM_TESTING_IMAGE=/afs/cern.ch/work/<letter>/<user>/fm_testing.sif
+apptainer build $FM_TESTING_IMAGE fm_testing.def
 
 # 3. Check that it works. /eos must be bound explicitly, it is not visible by default.
-apptainer exec --bind /eos:/eos --bind /afs:/afs fm_testing.sif python -c "import torch, lightning, hydra; print('ok')"
+apptainer exec --bind /eos:/eos --bind /afs:/afs $FM_TESTING_IMAGE python -c "import torch, lightning, hydra; print('ok')"
 ```
 
 From then on, every command in this README that starts with `python` is meant to run inside the container:
@@ -132,7 +135,7 @@ python src/train.py trainer=cpu                 # force CPU even on a GPU machin
 ```
 
 
-**Your own paths.** The defaults in `configs/paths/fm_testing.yaml` point at CERN storage, which does not exist on your machine. Rather than editing that file, which everyone shares, put your own values in `configs/local/default.yaml`. Both `configs/train.yaml` and `configs/vectorize_preprocess.yaml` end their defaults list with `- optional local: default`, so Hydra loads that file when it exists and carries on when it does not, and `.gitignore` already lists it, so your settings are never committed and never collide with anyone else's:
+**Your own paths.** By default the shards are written under `data/` inside the repository, which is enough for a small dataset and is already in `.gitignore`; the Parquet files are read from the copy on EOS, which off lxplus does not exist. Rather than editing `configs/paths/fm_testing.yaml`, which everyone shares, put your own values in `configs/local/default.yaml`. Both `configs/train.yaml` and `configs/vectorize_preprocess.yaml` end their defaults list with `- optional local: default`, so Hydra loads that file when it exists and carries on when it does not, and `.gitignore` already lists it, so your settings are never committed and never collide with anyone else's:
 
 ```yaml
 # @package _global_
@@ -145,13 +148,13 @@ data:
   num_workers: 4                               # a sane value for a laptop
 ```
 
-The names `eos_data_dir` and `tmp_data_dir` are historical and have nothing to do with EOS: they are simply the output directory and the scratch directory.
+The names `eos_data_dir` and `tmp_data_dir` are historical and have nothing to do with EOS: they are simply the output directory and the scratch directory. For a one-off they also read the environment, as `COLLIDE_DATASET_DIR`, `COLLIDE_DATA_DIR` and `COLLIDE_TMP_DIR`, but a file you can read back later is the better record of what a run used.
 
 ### Two things that are easy to miss
 
 **The project root.** Hydra resolves paths against the `PROJECT_ROOT` environment variable. The entry points set it themselves: each calls `rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)`, which walks up until it finds the `.project-root` file at the top of the repository. That is why the repository must be cloned whole, and why `.project-root` must not be deleted. If you write your own script that imports from `src/`, start it with the same two lines.
 
-**The event-count file.** `src/utils/nEvents_scan/file_event_counts.json` records how many events each Parquet file contains, so that building a manifest does not have to open every file. It is only used for that: how many events a dataset actually holds is read from the shards. If you use a process it does not list, or the dataset is updated, regenerate it with `src/utils/nEvents_scan/scan_parquet_nevent.py`. Reading only the Parquet metadata, the scan is far quicker than reading the files. That script imports `tqdm`, which is not in `requirements.txt`, so install it first.
+**The event-count file.** `src/utils/nEvents_scan/file_event_counts.json` records how many events each Parquet file contains, so that building a manifest does not have to open every file. It is only used for that: how many events a dataset actually holds is read from the shards. If you use a process it does not list, or the dataset is updated, regenerate it and point `data.event_counts_json` at the new file; the script is `src/utils/nEvents_scan/scan_parquet_nevent.py`. Reading only the Parquet metadata, the scan is far quicker than reading the files. That script imports `tqdm`, which is not in `requirements.txt`, so install it first.
 
 ## 3. The dataset
 
@@ -442,10 +445,13 @@ To rebuild a dataset produced before all this, point the config at its directory
 ### 5.6 Checking it yourself
 
 ```bash
-pytest tests/test_pipeline_determinism.py   # writes its own fake Parquet files, no EOS needed
+pytest                                      # the whole suite, nothing needs EOS
+pytest tests/test_pipeline_determinism.py   # just the pipeline, on Parquet it writes itself
 ```
 
 Those tests vectorise and preprocess a small fake dataset twice and require the shards to be identical, read it with several worker counts and require the same events, and delete a preprocessed shard to check it is rebuilt identically without refitting the statistics.
+
+The suite should end green with a dozen tests skipped: those are the ones inherited from the template, which train on the default configuration and therefore need a real dataset. The skip reason says so. If one of them fails rather than skips, that is a bug worth reporting.
 
 ---
 
