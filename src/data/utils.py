@@ -545,6 +545,78 @@ def filter_empty_events(X: np.ndarray, feature_map: dict) -> np.ndarray:
     return keep
 
 
+def check_columns_present(base_dir: str, manifest: dict, all_cols: list) -> None:
+    """Every requested column must exist in the files, checked before any work starts.
+
+    One Parquet file per class is opened and only its schema read. A missing column used
+    to surface as a pyarrow error inside a batch job, after fifty files had been read,
+    or — on the Hugging Face copy, which has 174 of the 271 columns EOS has — for every
+    job at once.
+    """
+    missing_by_folder = {}
+    for folder, buckets in manifest.items():
+        names = [fn for split in SPLIT_NAMES for fn in buckets.get(split, [])]
+        if not names:
+            continue
+        path = os.path.join(base_dir, folder, sorted(names)[0])
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"{path} is in the manifest but not on disk.")
+        present = set(pq.ParquetFile(path).schema_arrow.names)
+        missing = [c for c in all_cols if c not in present]
+        if missing:
+            missing_by_folder[folder] = (os.path.basename(path), missing)
+
+    if not missing_by_folder:
+        return
+
+    lines = [f"  {folder} ({fname}): {', '.join(cols)}"
+             for folder, (fname, cols) in sorted(missing_by_folder.items())]
+    raise ValueError(
+        "Columns the configuration asks for are not in the data:\n" + "\n".join(lines)
+        + "\nThe copy on EOS has columns the one on Hugging Face does not. If these are "
+        "the nine EOS-only variables, use `data: collide2v_common`, which keeps only "
+        "what both copies have."
+    )
+
+
+def check_feature_map_matches(eos_vec_dir: str, config) -> None:
+    """Refuse to add shards whose columns differ from the ones already there.
+
+    The manifest records which files a dataset is made of, not which features were taken
+    from them, so changing `datasets_config` and keeping the `label` used to append
+    shards of a different width — or the same width with different columns, which is
+    worse, because nothing would ever complain.
+    """
+    stored_path = os.path.join(eos_vec_dir, "feature_map.json")
+    if not os.path.exists(stored_path):
+        return
+    with open(stored_path) as f:
+        stored = json.load(f)
+    wanted = build_feature_map_dict(config)
+    if stored == wanted:
+        return
+
+    differences = []
+    for group in sorted(set(stored) | set(wanted)):
+        if group not in stored:
+            differences.append(f"  {group}: not in the dataset, asked for now")
+        elif group not in wanted:
+            differences.append(f"  {group}: in the dataset, not asked for now")
+        elif stored[group] != wanted[group]:
+            differences.append(
+                f"  {group}: dataset has topk={stored[group]['topk']} "
+                f"count={stored[group]['count']} with {len(stored[group]['columns'])} columns, "
+                f"this run asks for topk={wanted[group]['topk']} "
+                f"count={wanted[group]['count']} with {len(wanted[group]['columns'])} columns"
+            )
+    raise ValueError(
+        f"{stored_path} describes different features from the ones this run asks for:\n"
+        + "\n".join(differences)
+        + "\nShards already written cannot be read with this feature map. Give this "
+        "selection a new `data.label`."
+    )
+
+
 def vectorize_to_local(
     base_dir: str,
     config: dict,
@@ -593,6 +665,7 @@ def vectorize_to_local(
 
     os.makedirs(tmp_vec_dir, exist_ok=True)
     os.makedirs(eos_vec_dir, exist_ok=True)
+    check_feature_map_matches(eos_vec_dir, config)
     save_feature_map(config, eos_vec_dir, vlen)
     _filter_fm = build_feature_map_dict(config)
 
@@ -613,6 +686,8 @@ def vectorize_to_local(
             event_counts_json=event_counts_json,
         )
         check_shards_match_manifest(eos_vec_dir, split_manifest)
+
+    check_columns_present(base_dir, split_manifest, all_cols)
 
     # -------------------------------------------------------------------------
     # Vectorize files based on manifest
