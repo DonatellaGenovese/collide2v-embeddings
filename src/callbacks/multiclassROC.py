@@ -16,6 +16,7 @@ class MCROC(Callback):
         super().__init__()
         self.device = None
         self.num_classes = None
+        self._warned_about_probs = False
 
     def on_validation_start(self, trainer, pl_module):
         """Do checks required for this callback to work."""
@@ -30,10 +31,30 @@ class MCROC(Callback):
     def on_validation_batch_end(
         self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
     ):
-        """Determine the rate for every given metric for every validation data set."""
+        """Accumulate the per-class AUROC from what validation_step returned.
+
+        A model has to return {"probs": ...} for this to work, since a callback cannot
+        reach inside a validation step. Not every model does — a contrastive one has no
+        class probabilities to offer unless its diagnostic head is on — so a missing one
+        is reported once and the callback steps aside. It used to raise
+        "'NoneType' object is not subscriptable" on the first validation batch.
+        """
         self.total_batches = trainer.num_val_batches
         _, labels = batch
-        self.mcauc.update(outputs['probs'], labels)
+
+        probs = outputs.get("probs") if isinstance(outputs, dict) else None
+        if probs is None:
+            if not self._warned_about_probs:
+                print(
+                    f"⚠️  {type(pl_module).__name__}.validation_step returns no 'probs', "
+                    "so the per-class AUROC (val/class_*_auc, val/mean_auc) will not be "
+                    "logged. Return {'probs': softmax(logits)} from validation_step to "
+                    "get them, or drop multiclassROC from the callbacks."
+                )
+                self._warned_about_probs = True
+            return
+
+        self.mcauc.update(probs, labels)
 
     def on_validation_epoch_end(self, trainer, pl_module) -> None:
         """Log the anomaly rates computed on each of the data sets."""

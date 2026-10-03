@@ -238,7 +238,8 @@ class COLLIDE2VContrastiveLitModule(LightningModule):
         if logits is not None:
             first_view = logits[:batch_size]
             result["classification_loss"] = self.classification_criterion(first_view, labels)
-            result["preds"] = first_view.argmax(dim=-1)
+            result["probs"] = F.softmax(first_view, dim=-1)
+            result["preds"] = result["probs"].argmax(dim=-1)
         return result
 
     def _total_loss(self, result: Dict[str, torch.Tensor]) -> torch.Tensor:
@@ -264,13 +265,19 @@ class COLLIDE2VContrastiveLitModule(LightningModule):
             self.log("train/classification_loss", result["classification_loss"], on_step=False, on_epoch=True)
         return loss
 
-    def validation_step(self, batch, batch_idx: int) -> None:
+    def validation_step(self, batch, batch_idx: int) -> Optional[Dict[str, torch.Tensor]]:
         result = self.model_step(batch)
         self.val_loss(result["contrastive_loss"])
         self.log("val/contrastive_loss", self.val_loss, on_step=False, on_epoch=True, prog_bar=True)
-        if "preds" in result:
-            self.val_acc(result["preds"], batch[1])
-            self.log("val/acc", self.val_acc, on_step=False, on_epoch=True, prog_bar=True)
+        if "probs" not in result:
+            # No classification head: there are no class probabilities to report, and
+            # the ROC callback says so once and steps aside.
+            return None
+
+        self.val_acc(result["preds"], batch[1])
+        self.log("val/acc", self.val_acc, on_step=False, on_epoch=True, prog_bar=True)
+        # What the multiclassROC callback reads, for val/mean_auc.
+        return {"probs": result["probs"]}
 
     def test_step(self, batch, batch_idx: int) -> None:
         result = self.model_step(batch)

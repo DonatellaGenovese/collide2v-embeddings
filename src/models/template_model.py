@@ -121,8 +121,8 @@ class TemplateLitModule(LightningModule):
         x, y = batch
         logits = self.forward(x)
         loss = self.criterion(logits, y)
-        preds = F.softmax(logits, dim=-1).argmax(dim=-1)
-        return loss, preds, y
+        probs = F.softmax(logits, dim=-1)
+        return loss, probs, probs.argmax(dim=-1), y
 
     def training_step(self, batch, batch_idx: int) -> torch.Tensor:
         """CONTRACT 4 — log under the names the callbacks and configs expect.
@@ -132,22 +132,29 @@ class TemplateLitModule(LightningModule):
         something else trains fine and then cannot be checkpointed on its best epoch.
         Returning the loss is what Lightning backpropagates.
         """
-        loss, preds, targets = self.model_step(batch)
+        loss, _, preds, targets = self.model_step(batch)
         self.train_loss(loss)
         self.train_acc(preds, targets)
         self.log("train/loss", self.train_loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log("train/acc", self.train_acc, on_step=False, on_epoch=True, prog_bar=True)
         return loss
 
-    def validation_step(self, batch, batch_idx: int) -> None:
-        loss, preds, targets = self.model_step(batch)
+    def validation_step(self, batch, batch_idx: int):
+        """Returning {"probs": ...} is what feeds the per-class AUROC callback.
+
+        A callback cannot reach inside a step, so `multiclassROC` — which is in the
+        default callbacks, and which logs `val/mean_auc` that two of the sweeps optimise
+        — reads it from here. Leave it out and those metrics are simply missing.
+        """
+        loss, probs, preds, targets = self.model_step(batch)
         self.val_loss(loss)
         self.val_acc(preds, targets)
         self.log("val/loss", self.val_loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log("val/acc", self.val_acc, on_step=False, on_epoch=True, prog_bar=True)
+        return {"probs": probs}
 
     def test_step(self, batch, batch_idx: int) -> None:
-        loss, preds, targets = self.model_step(batch)
+        loss, _, preds, targets = self.model_step(batch)
         self.test_acc(preds, targets)
         self.log("test/loss", loss, on_step=False, on_epoch=True)
         self.log("test/acc", self.test_acc, on_step=False, on_epoch=True)

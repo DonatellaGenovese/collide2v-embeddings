@@ -161,6 +161,10 @@ class COLLIDE2VTinyMLPLitModule(LightningModule):
         self.log("val/acc", self.val_acc, on_step=False, on_epoch=True, prog_bar=True)
         self.log("val/auroc", self.val_auroc, on_step=False, on_epoch=True, prog_bar=True)
 
+        # The multiclassROC callback reads this to build the per-class AUROC; without it
+        # val/mean_auc is never logged, and the sweeps that optimise it have nothing.
+        return {"probs": probs}
+
     def on_validation_epoch_end(self) -> None:
         "Lightning hook that is called when a validation epoch ends."
         # Compute metrics only if AUROC has received any samples
