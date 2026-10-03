@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [main, "release/*", "dev"]
 
+# Python 3.10 and 3.11 only: the code uses `dict | None` in annotations, which is 3.10,
+# and the container is built from python:3.10-slim. The matrix used to include 3.8 and
+# 3.9, where an import of src/ fails — nobody noticed, because pytest was not run.
+#
+# The tests that need a COLLIDE-2V dataset skip themselves when there is none, which
+# there never is here, so the suite is meaningful on a runner: it covers the manifest,
+# the loader, the event check, the column and feature-map checks, and a full
+# vectorise-preprocess-read cycle on Parquet files the tests write themselves.
+
 jobs:
   run_tests_ubuntu:
     runs-on: ${{ matrix.os }}
@@ -14,34 +23,33 @@ jobs:
       fail-fast: false
       matrix:
         os: ["ubuntu-latest"]
-        python-version: ["3.8", "3.9", "3.10"]
+        python-version: ["3.10", "3.11"]
 
     timeout-minutes: 20
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v3
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest
-          pip install sh
 
       - name: List dependencies
         run: |
           python -m pip list
 
-    # NOT RUNNING PYTEST BECAUSE /EOS IS NOT ACCESSIBLE ON GITHUB ACTIONS
-    #  - name: Run pytest
-    #    run: |
-    #      pytest -v
+      - name: Run pytest
+        run: |
+          pytest -v
 
   run_tests_macos:
     runs-on: ${{ matrix.os }}
@@ -50,53 +58,19 @@ jobs:
       fail-fast: false
       matrix:
         os: ["macos-latest"]
-        python-version: ["3.8", "3.9", "3.10"]
+        python-version: ["3.11"]
 
     timeout-minutes: 20
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v3
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest
-          pip install sh
-
-      - name: List dependencies
-        run: |
-          python -m pip list
-
-      #- name: Run pytest
-      #  run: |
-      #    pytest -v
-
-  run_tests_windows:
-    runs-on: ${{ matrix.os }}
-
-    strategy:
-      fail-fast: false
-      matrix:
-        os: ["windows-latest"]
-        python-version: ["3.8", "3.9", "3.10"]
-
-    timeout-minutes: 20
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v3
-        with:
-          python-version: ${{ matrix.python-version }}
+          cache: pip
 
       - name: Install dependencies
         run: |
@@ -104,26 +78,26 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
 
-      - name: List dependencies
+      - name: Run pytest
         run: |
-          python -m pip list
+          pytest -v
 
-      #- name: Run pytest
-      #  run: |
-      #    pytest -v
+  # Windows is not part of what this repository supports: the pipeline is written for
+  # lxplus and for Unix-like machines, and the batch submission is HTCondor shell
+  # scripts. The job that used to install dependencies there and run nothing is gone.
 
-  # upload code coverage report
   code-coverage:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v2
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
+          cache: pip
 
       - name: Install dependencies
         run: |
@@ -131,10 +105,6 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
           pip install pytest-cov[toml]
-          pip install sh
 
-      #- name: Run tests and collect coverage
-      #  run: pytest --cov src # NEEDS TO BE UPDATED WHEN CHANGING THE NAME OF "src" FOLDER
-
-      #- name: Upload coverage to Codecov
-      #  uses: codecov/codecov-action@v3
+      - name: Run tests and collect coverage
+        run: pytest --cov src --cov-report=term-missing
