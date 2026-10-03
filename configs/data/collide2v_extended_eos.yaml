@@ -1,14 +1,14 @@
-# The 29 variables of the published study: the 20 in `collide2v_common` plus nine that
-# exist only in the copy on EOS.
+# The 29 variables of the published study: the 19 in `collide2v_common` plus ten that
+# exist only in the copy on EOS, checked against a Hugging Face download.
 #
-#   FullReco_JetPuppiAK4_NNeutrals
+#   FullReco_JetPuppiAK4_NCharged, _NNeutrals
 #   FullReco_Electron_Charge, _D0, _DZ
 #   FullReco_MuonTight_Charge, _D0, _DZ
 #   FullReco_PhotonTight_EhadOverEem, _IsolationVarRhoCorr
 #
 # Charge, D0 and DZ are per-object: the sign of the lepton, and how far its track
-# starts from the beam line, which is what makes a displaced decay visible. NNeutrals
-# is the neutral multiplicity inside a jet. A model trained on these cannot be run on
+# starts from the beam line, which is what makes a displaced decay visible. NCharged and
+# NNeutrals are the charged and neutral multiplicities inside a jet. A model trained on these cannot be run on
 # the Hugging Face copy at all, and a result obtained with them cannot be reproduced by
 # someone without a CERN account — which is the trade this file makes.
 #

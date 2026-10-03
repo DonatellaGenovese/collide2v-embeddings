@@ -1,10 +1,13 @@
-# The 20 variables that exist in both copies of COLLIDE-2V, on EOS and on Hugging
-# Face. Use this unless you need the nine that only EOS has: an experiment written
-# against it runs on either copy, which is what makes a result reproducible by someone
-# who does not have a CERN account.
+# The 19 variables that exist in both copies of COLLIDE-2V, on EOS and on Hugging Face.
+# Use this unless you need the ten that only EOS has: an experiment written against it
+# runs on either copy, which is what makes a result reproducible by someone without a
+# CERN account.
 #
-# `collide2v_extended_eos` adds those nine. Everything else — the processes, the
-# splits, the seed, the preprocessing — is inherited from `collide2v_basic`.
+# The list was checked against a file downloaded from Hugging Face, which has 173 of the
+# 271 columns the EOS copy has. `collide2v_extended_eos` adds the ten.
+#
+# Everything else — the processes, the splits, the seed, the preprocessing — is
+# inherited from `collide2v_basic`.
 
 defaults:
   - collide2v_basic
@@ -17,7 +20,6 @@ datasets_config:
       - FullReco_JetPuppiAK4_Phi
       - FullReco_JetPuppiAK4_Mass
       - FullReco_JetPuppiAK4_BTag
-      - FullReco_JetPuppiAK4_NCharged
     topk: 12
     count: true
 
