@@ -637,10 +637,28 @@ augmentation that reorders or adds objects has nowhere to go.
 
 ## 7. Logging and sweeps
 
-The repository is set up for the MLflow logger and the Optuna sweeper. Runs are written
-under `logs/mlflow`, and `mlflow ui` from inside that directory serves them; a sweep
-writes a `.db` that `notebooks/optuna_sweep_results.ipynb` reads.
+Every run writes its numbers through a logger, chosen with `logger=<name>` from
+`configs/logger/`:
 
-> This section is a stub. It needs a short tutorial on reading a run in MLflow and in
-> wandb, both of which have configs in `configs/logger/`, and the notebooks still carry
-> absolute paths from the original author.
+| Logger | Where the numbers go |
+| --- | --- |
+| `mlflow` | the filesystem, under `logs/mlflow/mlruns`. The default: nothing leaves the machine and nothing needs an account. |
+| `wandb` | a server, so a batch run can be watched from anywhere. Needs an account and a key, and a run's metadata leaves CERN. |
+| `csv` | a file, for plotting it yourself. |
+
+A run's own directory, `logs/train/runs/<date>/`, holds the checkpoints and
+`.hydra/config.yaml` — the fully composed config, which is the whole description of what
+ran, down to the dataset label and the seed. That file is what to read when a result has
+to be reproduced later.
+
+Sweeps use Optuna through Hydra, from `configs/hparams_search/`, and `-m` is what turns a
+run into a sweep:
+
+```bash
+python src/train.py -m hparams_search=collide2v_optuna_multiclass experiment=<name>
+```
+
+**[docs/logging.md](docs/logging.md) has the rest**: serving the MLflow UI from lxplus
+over an SSH tunnel, using wandb offline on a batch node and syncing afterwards, which
+metrics to watch for a classifier against a contrastive encoder — where there is no
+accuracy to watch and a falling loss is not enough — and how to read a sweep.
