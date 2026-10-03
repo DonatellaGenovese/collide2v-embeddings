@@ -1,19 +1,29 @@
 #!/usr/bin/env python3
-"""
-Scan all parquet files under each process folder defined in your Hydra config
-and record their number of events into a global JSON metadata file.
+"""Record how many events each Parquet file holds, so planning splits is cheap.
 
-Outputs:
-    file_event_counts.json:
-        {
-            "QCD_HT50toInf": {"0001.parquet": 10000, "0002.parquet": 9850, ...},
-            "ttH_incl": {"0001.parquet": 9725, ...},
-            ...
-        }
+The result is what `data.event_counts_json` points at:
+
+    {
+        "QCD_HT50toInf": {"QCD_HT50toInf-NEVENT10000-RS26000001.parquet": 8243, ...},
+        "HH_4b": {"HH_4b-NEVENT10000-RS20000001.parquet": 9993, ...},
+    }
+
+Only the Parquet footer is read, so scanning is quick compared with reading the files.
+
+    # the copy on EOS, every process the default config knows about
+    python src/utils/nEvents_scan/scan_parquet_nevent.py
+
+    # a subset downloaded from Hugging Face: every directory found there
+    python src/utils/nEvents_scan/scan_parquet_nevent.py \
+        --base-dir data/collide --output data/collide/file_event_counts.json
+
+The shipped src/utils/nEvents_scan/file_event_counts.json covers the EOS production as
+it was scanned; rerun this when the dataset changes or when a process is missing.
 """
 
-import os
+import argparse
 import json
+import os
 from omegaconf import OmegaConf
 import pyarrow.parquet as pq
 from concurrent.futures import ProcessPoolExecutor
@@ -68,17 +78,48 @@ def scan_dataset(base_dir: str, process_to_folder: dict, output_json: str, n_wor
     print(f"✅ Saved {output_json} ({len(summary)} datasets)")
 
 
+def folders_in(base_dir: str) -> dict:
+    """Every directory holding Parquet files, as {name: name}.
+
+    What a Hugging Face download looks like: directories named after the processes,
+    and no config saying which ones are there.
+    """
+    found = {}
+    for name in sorted(os.listdir(base_dir)):
+        path = os.path.join(base_dir, name)
+        if os.path.isdir(path) and any(f.endswith(".parquet") for f in os.listdir(path)):
+            found[name] = name
+    return found
+
+
+def main():
+    default_output = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "file_event_counts.json")
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--base-dir", default=None,
+                    help="directory holding one folder per process "
+                         "(default: paths.dataset_dir of configs/paths/fm_testing.yaml)")
+    ap.add_argument("--output", default=default_output, help="where to write the JSON")
+    ap.add_argument("--workers", type=int, default=16)
+    args = ap.parse_args()
+
+    repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    if args.base_dir:
+        base_dir = args.base_dir
+        process_to_folder = folders_in(base_dir)
+        print(f"🔍 {len(process_to_folder)} process folders found under {base_dir}")
+    else:
+        # dataset_dir is ${oc.env:COLLIDE_DATASET_DIR,<the copy on EOS>}; reading the
+        # node resolves it, and nothing else in that file is touched.
+        paths = OmegaConf.load(os.path.join(repo, "configs/paths/fm_testing.yaml"))
+        base_dir = str(paths.dataset_dir)
+        data_cfg = OmegaConf.load(os.path.join(repo, "configs/data/collide2v_basic.yaml"))
+        process_to_folder = dict(data_cfg["process_to_folder"])
+        print(f"🔍 {len(process_to_folder)} processes from configs/data/collide2v_basic.yaml")
+
+    scan_dataset(base_dir, process_to_folder, args.output, n_workers=args.workers)
+
+
 if __name__ == "__main__":
-    # --- Load your Hydra data config ---
-    cfg = OmegaConf.load("configs/data/collide2v_basic.yaml")
-
-    # Base directory of all Parquet folders
-    base_dir = cfg.get("base_dir", "/eos/project/f/foundational-model-dataset/samples/production_final")
-
-    # process_to_folder mapping
-    process_to_folder = cfg["process_to_folder"]
-
-    # Output file (you can change to EOS path if preferred)
-    output_json = "src/utils/nEvents_scan/file_event_counts.json"
-
-    scan_dataset(base_dir, process_to_folder, output_json, n_workers=16)
+    main()

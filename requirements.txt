@@ -19,6 +19,8 @@ mlflow
 #--------- python --------- #
 pyarrow<=20.0.0
 awkward
+huggingface_hub  # downloading the public copy of the dataset, see scripts/download_collide_subset.py
+tqdm            # progress of the event-count scan
 pandas
 matplotlib
 ipykernel
