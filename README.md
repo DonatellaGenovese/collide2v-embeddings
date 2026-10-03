@@ -331,9 +331,11 @@ The rest of the configuration:
 For a dataset small enough to build on one machine — a few files per class, which is the normal case off lxplus:
 
 ```bash
-python src/prepare_data.py experiment=<name>
+python src/prepare_data.py experiment=fm_testing_binary   # two classes, 50k events each
 python src/prepare_data.py experiment=<name> data.label=my_small_test   # a separate one
 ```
+
+`fm_testing_binary` is the smallest experiment that does something: QCD against ggH→bb, on the common feature set. It takes minutes, and it is the one to start from.
 
 For the full dataset, send the work to HTCondor. The second stage needs the first to be finished:
 
@@ -413,7 +415,6 @@ Compare the two. After preprocessing a feature should sit around 0 with a spread
 
 - **A Parquet file that cannot be read is skipped.** The error is printed and vectorisation carries on, so a split can come out smaller than asked for while every job reports success. Read the logs, do not just check that they finished.
 - **The output paths default under the repository.** Small datasets are fine there, hundreds of gigabytes are not: set them in `configs/local/default.yaml`, as section 2 describes.
-- **Seven experiment configs no longer compose.** They override a data config that was removed: `fm_testing_binary.yaml` wants `collide2v_all_features`, and the six `fm_testing_selected_features_*` under `archive/` want `collide2v_emptyDatasetConfig`. Start from `fm_testing_18class_highlevel.yaml` instead.
 - **Checking a dataset reads every shard header.** `has_enough_events` and the loader both open one file per shard, which on EOS costs about a minute and a half for a twelve-class dataset. It is paid once at startup.
 
 ## 5. Which files a dataset is made of
@@ -490,6 +491,8 @@ pytest tests/test_pipeline_determinism.py   # just the pipeline, on Parquet it w
 Those tests vectorise and preprocess a small fake dataset twice and require the shards to be identical, read it with several worker counts and require the same events, and delete a preprocessed shard to check it is rebuilt identically without refitting the statistics.
 
 The suite should end green with a dozen tests skipped: those are the ones inherited from the template, which train on the default configuration and therefore need a real dataset. The skip reason says so. If one of them fails rather than skips, that is a bug worth reporting.
+
+GitHub Actions runs the same suite on every push and pull request, on Python 3.10 and 3.11, plus the four `pre-commit` hooks. So a red tick means something real; it was not always so.
 
 ---
 
