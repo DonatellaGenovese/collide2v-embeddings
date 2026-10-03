@@ -1,0 +1,55 @@
+# @package model
+#
+# SupCon: every event of the same process is a positive, the two augmented views
+# included. Labels shape the embedding directly, so it comes out organised by process —
+# useful when the classes are the thing you care about, and a commitment to them when
+# they are not. Khosla et al. (2020).
+defaults:
+  - _self_
+  - scheduler: none
+
+_target_: src.models.collide2v_contrastive.COLLIDE2VContrastiveLitModule
+
+positives: labels
+
+# Encoder: same shape as tinyTransformer, so the two are comparable.
+d_model: 512
+n_heads: 8
+num_layers: 6
+d_ff: 2048
+dropout: 0
+
+projection_dim: 128
+hidden_projection_dim: 256
+
+# Low temperature puts the weight on the hardest negatives; 0.07 is what the published
+# runs used, and what both SimCLR and SupCon papers report.
+temperature: 0.07
+base_temperature: 0.07
+
+# Two views per event. More views means a larger effective batch and more memory.
+num_views: 2
+
+# masking drops slots of the event; physics applies a phi rotation, an eta boost and pT
+# smearing, and needs norm_stats.json, so it only works on preprocessed data.
+augmentation: masking
+mask_probability: 0.2
+mask_full_particle: false
+eta_sigma: 1.5
+pt_sigma: 0.1
+
+# A linear head on the embedding, to have an accuracy to watch while the contrastive
+# loss falls. Its weight is small on purpose: it is a diagnostic, not the objective.
+use_classification_head: true
+classification_weight: 0.1
+
+allow_single_class_batches: true
+compile: false
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 2e-4
+  weight_decay: 1e-2
+  eps: 1e-09
+  betas: [0.9, 0.999]
