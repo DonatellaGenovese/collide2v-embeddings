@@ -175,11 +175,19 @@ class TinyTransformer(nn.Module):
         tokens = torch.cat([event_token] + all_tokens, dim=1)  # (B, total_tokens, d_model)
         return tokens
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def get_embeddings(self, x: torch.Tensor) -> torch.Tensor:
+        """One vector per event, before the classification head.
+
+        This is the representation everything downstream works on: the contrastive
+        objectives project it, the probes score it, and anomaly detection measures
+        distances in it. Tokens are averaged rather than read off a [CLS] position,
+        since there is none here.
+        """
         tokens = self.tokenize(x)
         tokens = self.input_norm(tokens)
         enc = self.encoder(tokens)
-        # Take the mean over all tokens for classification
-        cls_token = enc.mean(dim=1)
-        logits = self.cls_head(cls_token)
-        return logits
+        return enc.mean(dim=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # The classifier is the embedding plus a linear head, so both share one path.
+        return self.cls_head(self.get_embeddings(x))
