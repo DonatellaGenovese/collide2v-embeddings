@@ -330,3 +330,48 @@ def test_simclr_refuses_a_single_view():
 def test_an_unknown_regime_is_refused():
     with pytest.raises(ValueError):
         COLLIDE2VContrastiveLitModule(positives="class_labels")
+
+
+# ---------------------------------------------------------------------------
+# The linear probe
+# ---------------------------------------------------------------------------
+
+
+def test_a_probe_recovers_a_structure_that_is_there():
+    """On embeddings that separate the classes, a linear probe should do well.
+
+    The point of the probe is to measure the representation, so the test fixes the
+    representation and checks the measurement: four well-separated clusters, one per
+    class, must be nearly perfectly classified by a linear map.
+    """
+    from src.eval_probes import score, train_linear_probe
+
+    torch.manual_seed(0)
+    centres = torch.eye(CLASSES, 6) * 5.0
+
+    def sample(n):
+        labels = torch.randint(0, CLASSES, (n,))
+        return centres[labels] + torch.randn(n, 6), labels
+
+    probe, _ = train_linear_probe(sample(800), sample(200), CLASSES, epochs=30,
+                                  batch_size=128)
+    results = score(probe, sample(200), CLASSES)
+
+    assert results["accuracy"] > 0.95
+    assert results["auroc"] > 0.99
+
+
+def test_a_probe_finds_nothing_in_an_embedding_that_holds_nothing():
+    """And on noise it must report chance, or it is measuring itself."""
+    from src.eval_probes import score, train_linear_probe
+
+    torch.manual_seed(0)
+
+    def noise(n):
+        return torch.randn(n, 6), torch.randint(0, CLASSES, (n,))
+
+    probe, _ = train_linear_probe(noise(800), noise(200), CLASSES, epochs=30,
+                                  batch_size=128)
+    results = score(probe, noise(400), CLASSES)
+
+    assert results["accuracy"] < 0.45, "a linear probe cannot classify noise"
