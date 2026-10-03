@@ -61,10 +61,10 @@ It follows the [lightning-hydra-template](https://github.com/ashleve/lightning-h
 | Part | State |
 | --- | --- |
 | Vectorisation and preprocessing | Working. What still bites is listed in section 4.6. |
-| tinyMLP, tinyTransformer classifiers | Working. |
+| tinyMLP, tinyTransformer classifiers | Working. See section 6.2. |
 | Reading the dataset from EOS | Working. |
 | Reading a Hugging Face download | Supported: `scripts/download_collide_subset.py` fetches a subset and scans its event counts, and the default feature set is the one both copies have. See section 3. |
-| Contrastive models, augmentations, probes | To be added. |
+| SimCLR and SupCon, augmentations, linear probes | Working. One module, the config picks the objective; the loss is checked against the published implementations. See section 6. |
 | Reproducible file and event selection | Working, and tested without EOS. See section 5. |
 
 ## 2. Installation
@@ -496,16 +496,151 @@ GitHub Actions runs the same suite on every push and pull request, on Python 3.1
 
 ---
 
-<!--
-  SECTIONS BELOW ARE THE ORIGINAL README AND ARE BEING REWRITTEN.
-  Next: training and the models, then extending the code.
--->
+## 6. Training, and the models
 
-### Training Iterations and GPU Usage
-If all the preprocessed files are ready, training can simply again be done with `src/train.py`, which will recognize the available files and skip vectorization and preprocessing. Training can also be submitted to compute nodes using the condor batch submission system via `condor_submit src/train_full_pipeline.sub`. Given the corresponding trainer setting, training on GPU is also supported locally and via condor submission. All condor submission logs will by default be saved in `logs/condor_logs`.
+### 6.1 Running a training
 
-#### Supported Models
-The currently implemented models are an MLP and a Transformer. Their Lightning source code is available in `src/models`. More custom models can be implemented too and should follow the Lightning framework to be compatible with the rest of the repository.
+The dataset has to exist first, as section 4.2 says; training will not build it.
 
-### Logging and Hyperparameter Sweeps
-The repository is build with support of the mlflow logger and the optuna hyperparameter sweeper. Logs of your runs can be accessed on the mlflow user interface by calling `mlflow ui` from inside `logs/mlflow`. If you perform a hyperparameter sweep, its output will be saved in a .db file that can be inspected using `notebooks/optuna_sweep_results.ipynb`.
+```bash
+python src/train.py experiment=fm_testing_binary trainer=cpu        # the small one
+python src/train.py experiment=fm_testing_18class_highlevel         # the default, on GPU
+python src/train.py experiment=<name> model=supcon                  # a different model
+```
+
+Everything about a run lands in `logs/train/runs/<date>/`: the composed config, the
+checkpoints, and the metrics. To evaluate a checkpoint rather than train, use
+`src/eval.py ckpt_path=<path>`; to send a training to HTCondor, `condor_submit
+src/train_full_pipeline.sub`, whose logs go to `logs/condor_logs/`.
+
+Before a long run, prove the wiring in a minute:
+
+```bash
+python src/train.py experiment=<name> model=<name> trainer=cpu \
+    +trainer.limit_train_batches=5 +trainer.limit_val_batches=2
+```
+
+### 6.2 The models
+
+Four, and they answer two different questions.
+
+**Classifiers**, which ask *which process is this event*.
+
+| Model | What it does |
+| --- | --- |
+| `tinyMLP` | Two hidden layers on the flat event vector. The thing to beat: if a transformer does not beat this, the extra structure is not paying for itself. |
+| `tinyTransformer` | One token per object plus one for the event-level counts, a projection per group, then a standard encoder. No positional embeddings, because the objects are sorted by pT and their order carries no meaning beyond that. |
+
+**Contrastive encoders**, which ask *what does this event look like*. They produce an
+embedding, and a classifier is not the point: `src/models/collide2v_contrastive.py` is
+one module, and the config picks which pairs of a batch count as positive.
+
+| Model | Positives | Uses labels |
+| --- | --- | --- |
+| `simclr` | The two augmented views of one event | No |
+| `supcon` | Every event of the same process, views included | Yes |
+
+SimCLR trains on data nobody has labelled, which is the case that matters for a
+foundation model. SupCon uses the labels to shape the embedding, which makes it better
+at separating the processes it was given and a commitment to that choice.
+
+Both wrap `tinyTransformer` as the encoder, add a projection head that the loss sees and
+that is discarded afterwards, and keep a small classification head whose only job is to
+give you an accuracy to watch. What comes out of a run is the encoder.
+
+The loss was checked against the two published implementations it replaces: same inputs,
+same value to the last digit, same gradients. Those numbers are pinned in
+`tests/test_contrastive.py`.
+
+**One thing to know about the transformer.** The type embeddings — the vectors that would
+tell a jet token from a muon token — are built and then not added: the lines are
+commented out in `src/models/components/transformer.py`. So the model distinguishes
+object kinds only through the per-group projections. That is how the published runs were
+made; it is not obviously the right choice, and turning them on is a reasonable thing to
+try, on a new `label` and against the numbers you already have.
+
+### 6.3 Measuring an embedding
+
+A contrastive run has no accuracy of its own, so a falling loss says nothing about
+whether the embedding is useful. Freeze the encoder, fit a linear classifier on its
+output, and see how far that gets:
+
+```bash
+python src/eval_probes.py experiment=<name> model=simclr \
+    ckpt_path=logs/train/runs/<date>/checkpoints/<file>.ckpt
+```
+
+It writes `probe_results.json` with accuracy and AUROC per split. Linear on purpose:
+anything stronger measures the probe instead of the representation. The number to
+compare against is a `tinyTransformer` trained end to end on the same data — a probe that
+matches it means the embedding kept what the task needs.
+
+### 6.4 Adding a model
+
+The pipeline builds a model, so a model has to be buildable by it. Five requirements,
+each marked in `src/models/template_model.py`, which is a working two-layer classifier
+whose purpose is to be copied:
+
+1. **Take hyperparameters only.** Whatever `configs/model/<name>.yaml` holds arrives in
+   `__init__`; call `save_hyperparameters()`.
+2. **Build the layers in `setup()`,** from `self.trainer.datamodule`: `dm.vlen` is the
+   width of an event, `dm.num_classes` the number of processes. Neither is known before
+   the data is prepared, which is why `__init__` cannot do it. A model that works on
+   objects reads `feature_map.json` from `dm.paths["eos_preproc_dir"]` instead. `setup()`
+   runs more than once, so guard against rebuilding.
+3. **Offer `get_embeddings(x)`,** one vector per event. Optional for a classifier,
+   required for anything whose point is the representation, since that is what
+   `src/eval_probes.py` calls.
+4. **Log `train/loss`, `train/acc`, `val/loss`, `val/acc`, `val/acc_best`.** The
+   checkpoint callback, early stopping and the Optuna sweeps refer to these by name, so a
+   model that logs other names trains and then cannot be checkpointed on its best epoch.
+5. **Build the optimiser in `configure_optimizers()`** from the partial in the config, so
+   a sweep can vary the learning rate without touching code.
+
+Then:
+
+```bash
+cp src/models/template_model.py src/models/my_model.py
+cp configs/model/template.yaml configs/model/my_model.yaml   # change _target_
+python src/train.py experiment=fm_testing_binary model=my_model trainer=cpu \
+    +trainer.limit_train_batches=5 +trainer.limit_val_batches=2
+```
+
+`tests/test_contrastive.py` checks that contract on both the template and the contrastive
+module, so if you break it the suite says so.
+
+### 6.5 Adding an augmentation
+
+An augmentation for a contrastive objective has to change the numbers without changing
+what the event is. Two kinds ship, in `src/models/components/contrastive.py` and
+`src/data/augmentations.py`:
+
+| `model.augmentation` | What it does |
+| --- | --- |
+| `masking` | Zeroes slots, or whole objects with `mask_full_particle`. Stands in for a detector that does not see everything. Needs nothing but the feature map. |
+| `physics` | Rotates the event in φ, boosts it in η, smears each pT. Transformations physics says leave the event equivalent. |
+
+Yours goes next to these, as a callable taking `[batch, vlen]` and returning the same
+shape, and a branch in `_build_augmentation`. Three things to respect, all of them tested
+for the two above:
+
+- **Act on normalised vectors.** The loader returns preprocessed events, so a shift of
+  Δη in physical units is a shift of Δη/IQR here; the IQRs are in `norm_stats.json`,
+  which is why `PhysicsAugmentation` reads it.
+- **Leave padding alone.** An empty slot is zero, and an augmentation that writes into
+  one invents an object the detector never saw.
+- **Keep the event an event.** The φ rotation is a single angle for every object in the
+  event; one angle per object would scramble the geometry the model is meant to learn.
+
+Also worth knowing what cannot be expressed: an event is a fixed number of slots, so an
+augmentation that reorders or adds objects has nowhere to go.
+
+## 7. Logging and sweeps
+
+The repository is set up for the MLflow logger and the Optuna sweeper. Runs are written
+under `logs/mlflow`, and `mlflow ui` from inside that directory serves them; a sweep
+writes a `.db` that `notebooks/optuna_sweep_results.ipynb` reads.
+
+> This section is a stub. It needs a short tutorial on reading a run in MLflow and in
+> wandb, both of which have configs in `configs/logger/`, and the notebooks still carry
+> absolute paths from the original author.
