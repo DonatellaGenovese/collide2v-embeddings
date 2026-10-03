@@ -375,3 +375,56 @@ def test_a_probe_finds_nothing_in_an_embedding_that_holds_nothing():
     results = score(probe, noise(400), CLASSES)
 
     assert results["accuracy"] < 0.45, "a linear probe cannot classify noise"
+
+
+# ---------------------------------------------------------------------------
+# The template, and the contract it demonstrates
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("module_path,kwargs", [
+    ("src.models.template_model.TemplateLitModule", dict(hidden_dim=16)),
+    ("src.models.collide2v_contrastive.COLLIDE2VContrastiveLitModule",
+     dict(d_model=16, n_heads=2, num_layers=1, d_ff=32, projection_dim=8,
+          hidden_projection_dim=16)),
+])
+def test_a_model_builds_from_the_datamodule_and_exposes_embeddings(module_path, kwargs, tmp_path):
+    """The contract the README documents, checked on the template and on a real model.
+
+    A model takes hyperparameters only, builds its layers in setup() from the
+    datamodule, and offers get_embeddings(). If this test fails, either the contract
+    moved or the template stopped being an example of it.
+    """
+    import importlib
+
+    write_preprocessing_metadata(str(tmp_path))
+    module_name, class_name = module_path.rsplit(".", 1)
+    cls = getattr(importlib.import_module(module_name), class_name)
+
+    model = cls(optimizer=lambda params: torch.optim.SGD(params, lr=0.1), **kwargs)
+    assert model.training_step is not None
+
+    model._trainer = SimpleNamespace(
+        datamodule=SimpleNamespace(vlen=WIDTH, num_classes=CLASSES,
+                                   paths={"eos_preproc_dir": str(tmp_path)})
+    )
+    model.setup("fit")
+    model.setup("validate")  # must be idempotent
+
+    x = torch.rand(4, WIDTH)
+    embeddings = model.get_embeddings(x)
+    assert embeddings.ndim == 2 and embeddings.shape[0] == 4
+
+    model._trainer = None
+    model.train()
+    loss = model.training_step((x, torch.arange(4) % CLASSES), batch_idx=0)
+    loss.backward()
+    assert torch.isfinite(loss)
+
+
+def test_the_template_refuses_to_build_without_a_datamodule():
+    from src.models.template_model import TemplateLitModule
+
+    with pytest.raises(RuntimeError) as err:
+        TemplateLitModule().setup("fit")
+    assert "datamodule" in str(err.value)

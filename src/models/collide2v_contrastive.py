@@ -118,13 +118,16 @@ class COLLIDE2VContrastiveLitModule(LightningModule):
         """Build the model from what the datamodule knows. Called on every process."""
         if self.encoder is not None:
             return
-        if not (self.trainer and getattr(self.trainer, "datamodule", None)):
+        # The private attribute, not self.trainer, which raises Lightning's own error
+        # about not being attached to a Trainer before this check can run.
+        trainer = getattr(self, "_trainer", None)
+        dm = getattr(trainer, "datamodule", None) if trainer else None
+        if dm is None:
             raise RuntimeError(
                 "No datamodule: this module reads the feature map and the number of "
                 "classes from it, so it cannot be built on its own."
             )
 
-        dm = self.trainer.datamodule
         preproc_dir = dm.paths["eos_preproc_dir"]
         feature_map_path = os.path.join(preproc_dir, "feature_map.json")
         with open(feature_map_path) as f:

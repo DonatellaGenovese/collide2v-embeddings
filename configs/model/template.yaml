@@ -1,0 +1,25 @@
+# @package model
+#
+# The config that goes with src/models/template_model.py. Copy both, change `_target_`
+# to your module, and add whatever hyperparameters your model takes: everything here
+# arrives in its __init__.
+#
+#   python src/train.py experiment=fm_testing_binary model=template trainer=cpu \
+#       +trainer.limit_train_batches=5 +trainer.limit_val_batches=2
+defaults:
+  - _self_
+  - scheduler: none
+
+_target_: src.models.template_model.TemplateLitModule
+
+hidden_dim: 128
+dropout: 0.1
+compile: false
+
+# A partial, so the model builds it in configure_optimizers and a sweep can vary the
+# learning rate without touching any code.
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 1e-3
+  weight_decay: 1e-2
