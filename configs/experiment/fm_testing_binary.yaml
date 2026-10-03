@@ -1,47 +1,42 @@
 # @package _global_
-
-# to execute this experiment run:
-# python train.py experiment=fm_testing
+#
+# The smallest useful experiment: QCD against ggH->bb, two classes, on the feature set
+# both copies of the dataset have. Good for a first run, on a laptop or on lxplus:
+#
+#   python src/prepare_data.py experiment=fm_testing_binary
+#   python src/train.py experiment=fm_testing_binary trainer=cpu
+#
+# 50k training events per class is a few parquet files per class, so preparing it takes
+# minutes rather than days. Raise the counts once it works.
 
 defaults:
-  - override /data: collide2v_all_features
+  - override /data: collide2v_common
   - override /callbacks: default
   - override /trainer: gpu
 
-# all parameters below will be merged with parameters from default configurations set above
-# this allows you to overwrite only specified parameters
-
-tags: ["collide2v", "tinyTransformer", "version2"]
+tags: ["collide2v", "tinyTransformer", "binary"]
 
 data:
-  train_val_test_split_per_class: [4_960_000, 20_000, 20_000]
-  label: "v2_QCD_ggHbb_upscaled"
+  train_val_test_split_per_class: [50_000, 10_000, 10_000]
+  label: "v3_binary_qcd_gghbb"
   to_classify:
-    QCD: "QCD_inclusive"
-    ggHbb: "ggHbb"
+    - "QCD_inclusive"
+    - "ggHbb"
 
 trainer:
   min_epochs: 1
-  max_epochs: 1000
+  max_epochs: 20
 
 callbacks:
   early_stopping:
     monitor: "val/acc"
     min_delta: 0.0001
-    patience: 10
-
-model:
-  scheduler:
-    _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
-    _partial_: true
-    patience: 2
-    factor: 0.5
-    min_lr: 1e-06
+    patience: 5
 
 preprocess:
   enabled: true
 
 logger:
   mlflow:
-    run_name: "Optimized_upscaled_v2"
-    experiment_name: "hyperparameter_search"
+    run_name: "binary_qcd_vs_gghbb"
+    experiment_name: "binary_classification"
