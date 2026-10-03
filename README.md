@@ -63,7 +63,7 @@ It follows the [lightning-hydra-template](https://github.com/ashleve/lightning-h
 | Vectorisation and preprocessing | Working. What still bites is listed in section 4.6. |
 | tinyMLP, tinyTransformer classifiers | Working. |
 | Reading the dataset from EOS | Working. |
-| Reading a Hugging Face download | The default feature set is the one both copies have, and the columns are checked before a job starts. Still needs `paths.dataset_dir` pointed at the files and `data.event_counts_json` given a scan of them; `huggingface_hub` is not in `requirements.txt` yet, and none of it is tested. See section 3. |
+| Reading a Hugging Face download | Supported: `scripts/download_collide_subset.py` fetches a subset and scans its event counts, and the default feature set is the one both copies have. See section 3. |
 | Contrastive models, augmentations, probes | To be added. |
 | Reproducible file and event selection | Working, and tested without EOS. See section 5. |
 
@@ -135,6 +135,8 @@ python src/train.py trainer=gpu trainer.devices=2
 python src/train.py trainer=cpu                 # force CPU even on a GPU machine
 ```
 
+
+**Your own data.** Off lxplus there is no dataset until you fetch one: `python scripts/download_collide_subset.py --list` shows what the public copy holds, and section 3 has the two commands that turn a few of its files into a dataset.
 
 **Your own paths.** By default the shards are written under `data/` inside the repository, which is enough for a small dataset and is already in `.gitignore`; the Parquet files are read from the copy on EOS, which off lxplus does not exist. Rather than editing `configs/paths/fm_testing.yaml`, which everyone shares, put your own values in `configs/local/default.yaml`. Both `configs/train.yaml` and `configs/vectorize_preprocess.yaml` end their defaults list with `- optional local: default`, so Hydra loads that file when it exists and carries on when it does not, and `.gitignore` already lists it, so your settings are never committed and never collide with anyone else's:
 
@@ -217,52 +219,56 @@ The mapping from the process names used in the configs to these folder names is 
 
 This is the copy to use if you do not have the access to CERN account. Do not clone the repository: download the few files you need.
 
-The repository is laid out as one directory per process, with the same names as the folders on EOS. List it first, then download only the shards you picked:
+The repository is laid out as one directory per process, with the same names as the folders on EOS. A script does the downloading:
 
-```python
-from huggingface_hub import list_repo_files, snapshot_download
+```bash
+# what is there, and how many files each process has
+python scripts/download_collide_subset.py --list
 
-REPO = "fastmachinelearning/collide-1m"
-PROCESSES = ["QCD_HT50toInf", "HH_4b"]   # folder names, as on EOS
-FILES_PER_PROCESS = 2
-
-available = [f for f in list_repo_files(REPO, repo_type="dataset") if f.endswith(".parquet")]
-
-wanted = []
-for p in PROCESSES:
-    shards = sorted(f for f in available if f.startswith(f"{p}/"))
-    print(f"{p}: {len(shards)} files available, taking {FILES_PER_PROCESS}")
-    wanted += shards[:FILES_PER_PROCESS]
-
-snapshot_download(REPO, repo_type="dataset", allow_patterns=wanted, local_dir="data/collide")
+# three files of QCD, about 4 GB, into data/collide
+python scripts/download_collide_subset.py --out data/collide \
+    --processes QCD_HT50toInf --files-per-process 3
 ```
 
-Processes have between 2 and about 100 files each, of 1.2 to 1.6 GB, so check the count printed above before raising `FILES_PER_PROCESS`. Point `paths.dataset_dir` at `data/collide` and the pipeline reads it exactly as it reads EOS.
+Check the counts before asking for more: processes have between 2 and 100 files, of 1.2 to 1.6 GB each. Three per class is a sensible start — the splits take whole files, so a class with two files cannot fill train, val and test.
 
-Note that `huggingface_hub` is not yet in `requirements.txt`; install it yourself with `pip install huggingface_hub` until the loader described below is merged.
+The script then writes `data/collide/file_event_counts.json`, by scanning what it downloaded. That file is needed: planning the splits reads event counts, and the snapshot shipped with the repository describes the files on EOS, not these. Pass both paths:
+
+```bash
+python src/prepare_data.py experiment=fm_testing_18class_highlevel \
+    paths.dataset_dir=data/collide \
+    data.event_counts_json=data/collide/file_event_counts.json \
+    data.label=hf_subset \
+    'data.to_classify=[QCD_inclusive]' \
+    'data.train_val_test_split_per_class=[8000, 8000, 8000]'
+```
+
+Keep the default feature set, `collide2v_common`: `collide2v_extended_eos` asks for columns this copy does not have, and vectorisation stops before starting and names them.
 
 ### EOS and Hugging Face are not the same data
 
 They share file names and process names, which makes it tempting to treat them as interchangeable. They are not, in two separate ways.
 
-**Different events.** The same file name holds different collisions. `HH_4b-NEVENT10000-RS20000001.parquet` has 9,992 events on Hugging Face and 9,993 on EOS, and of the 124 columns the two versions share, not one holds identical values. A number obtained on EOS cannot be compared with a number obtained on Hugging Face. Say which copy you used, in your notes and in anything you publish.
+**Different events.** The same file name holds different collisions. `QCD_HT50toInf-NEVENT10000-RS26000001.parquet` has 8,221 events on Hugging Face and 8,243 on EOS; `HH_4b-NEVENT10000-RS20000001.parquet` has 9,992 against 9,993, and of the columns those two versions share, not one holds identical values. A number obtained on EOS cannot be compared with a number obtained on Hugging Face. Say which copy you used, in your notes and in anything you publish.
 
-**Different columns.** 174 columns on Hugging Face against 271 on EOS, and the difference is not a subset relation:
+**Different columns.** 173 columns on Hugging Face against 271 on EOS, and the difference is not a subset relation:
 
 | Only on Hugging Face | Only on EOS |
 | --- | --- |
 | `GenJetAK4`, `GenJetAK8`, `GenPart`, `PFCand`, `PrimaryVertex` | `Event_*`, `Gen_*`, `PFPart`, `Vertex`, `Rho`, `ScalarHT` |
 
-Of the 29 input variables used in the published study, nine exist only on EOS:
+Of the 29 input variables used in the published study, ten exist only on EOS. The list was checked against a downloaded file, not taken from the documentation:
 
 ```
-JetPuppiAK4_NNeutrals
+JetPuppiAK4_NCharged, JetPuppiAK4_NNeutrals
 Electron_Charge, Electron_D0, Electron_DZ
 MuonTight_Charge, MuonTight_D0, MuonTight_DZ
 PhotonTight_EhadOverEem, PhotonTight_IsolationVarRhoCorr
 ```
 
-The consequence for this repository: **the default feature set is the 20 variables both copies have**, `configs/data/collide2v_common.yaml`, so the same experiment definition runs on either. `collide2v_extended_eos.yaml` adds the other nine and only works on EOS. Vectorisation reads the schema of one file per class before it starts, so asking for a column the data does not have fails immediately, naming it, instead of inside a batch job.
+The consequence for this repository: **the default feature set is the 19 variables both copies have**, `configs/data/collide2v_common.yaml`, so the same experiment definition runs on either. `collide2v_extended_eos.yaml` adds the other ten and only works on EOS. Vectorisation reads the schema of one file per class before it starts, so asking for a column the data does not have fails immediately, naming it, instead of inside a batch job.
+
+**What is the same.** Both copies store these columns as Arrow `large_list<halffloat>`, so the reading code is identical; only the name of the inner list field differs, `item` against `element`, which awkward absorbs. If you build Parquet files of your own, note that a plain `list` and nullable columns also work, but neither is what either copy of COLLIDE-2V uses.
 
 ### Inspecting the files yourself
 
