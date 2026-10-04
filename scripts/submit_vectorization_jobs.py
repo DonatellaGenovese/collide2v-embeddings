@@ -19,7 +19,13 @@ from math import ceil
 from pathlib import Path
 from omegaconf import DictConfig
 
-from src.data.utils import MANIFEST_NAME, check_shards_match_manifest, resolve_split_manifest
+from src.data.utils import (
+    MANIFEST_NAME,
+    check_output_space,
+    check_shards_match_manifest,
+    compute_vlen,
+    resolve_split_manifest,
+)
 
 # -----------------------------------------------------------------------------
 # CONFIG
@@ -103,6 +109,9 @@ def main(cfg: DictConfig):
                 target_path = EOS_VEC_DIR / split_name / folder / fname.replace(".parquet", "_x.npy")
                 if not target_path.exists():
                     entries.append((folder, split_name, fname))
+
+    # Before submitting hundreds of jobs that would each discover a full quota.
+    check_output_space(str(EOS_VEC_DIR), len(entries), compute_vlen(data_cfg.datasets_config))
 
     n_jobs = ceil(len(entries) / MAX_FILES_PER_JOB)
     print(f"\n🟡 Total files: {len(entries)} → {n_jobs} jobs (≤{MAX_FILES_PER_JOB} files/job)")

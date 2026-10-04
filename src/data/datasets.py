@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from torch.utils.data import IterableDataset
 
-from src.data.utils import class_seed
+from src.data.utils import class_seed, shard_rows
 
 
 class LocalVectorDataset(IterableDataset):
@@ -70,12 +70,12 @@ class LocalVectorDataset(IterableDataset):
     # ------------------------------------------------------------------
 
     def _shards_of(self, class_dir):
-        """(filename, rows) per shard, sorted by name, rows read from the header."""
-        shards = []
-        for fx in sorted(f for f in os.listdir(class_dir) if f.endswith("_x.npy")):
-            rows = np.load(os.path.join(class_dir, fx), mmap_mode="r").shape[0]
-            shards.append((fx, int(rows)))
-        return shards
+        """(filename, rows) per shard, sorted by name.
+
+        Read through the same cache the event check uses, so planning an epoch does not
+        open every file again.
+        """
+        return shard_rows(class_dir)
 
     def _build_plan(self):
         """Plan of (class_dir, filename, n_rows, row_indices or None) entries.

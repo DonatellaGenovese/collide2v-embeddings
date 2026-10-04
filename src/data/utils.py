@@ -3,6 +3,7 @@ import json
 import os
 import random
 import shutil
+import subprocess
 
 from pathlib import Path
 
@@ -527,6 +528,82 @@ def resolve_split_manifest(
 # ============================================================
 
 
+# ============================================================
+# WILL THE DATASET FIT WHERE IT IS ABOUT TO BE WRITTEN?
+# ============================================================
+
+# Vectorised float32 shards plus their preprocessed copies, which are wider because
+# phi becomes (sin, cos) and categories become one-hot: about 1.25 to 1.3 times on the
+# feature sets shipped. 2.5 times the raw size covers both with some room.
+SPACE_FACTOR = 2.5
+EVENTS_PER_FILE = 10_000  # the NEVENT10000 in the file names, an upper bound
+
+
+def parse_fs_listquota(text: str) -> int | None:
+    """Free bytes from the output of `fs listquota`, or None if it says no limit.
+
+        Volume Name                    Quota       Used %Used   Partition
+        user.dgenoves               10485760    6608517   63%         20%
+    """
+    lines = [line for line in text.strip().splitlines() if line.strip()]
+    if len(lines) < 2:
+        return None
+    fields = lines[1].split()
+    if len(fields) < 3 or not fields[1].isdigit() or not fields[2].isdigit():
+        return None
+    quota_kb, used_kb = int(fields[1]), int(fields[2])
+    return max(quota_kb - used_kb, 0) * 1024
+
+
+def free_bytes(path: str) -> int:
+    """Space left where `path` is, honest about AFS quotas.
+
+    On AFS the filesystem reports the whole partition — 2.2 TB free, measured, on a home
+    directory whose quota had 3.9 GB left — so the quota is asked of AFS itself with
+    `fs listquota`. Anywhere else the filesystem's own figure is the right one.
+    """
+    target = os.path.abspath(path)
+    while not os.path.exists(target):
+        target = os.path.dirname(target)
+
+    if os.path.realpath(target).startswith("/afs/"):
+        try:
+            out = subprocess.run(["fs", "listquota", target], capture_output=True,
+                                 text=True, timeout=30)
+            free = parse_fs_listquota(out.stdout)
+            if free is not None:
+                return free
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return shutil.disk_usage(target).free
+
+
+def check_output_space(out_dir: str, n_files: int, vlen: int, free: int | None = None) -> None:
+    """Stop before writing a dataset that will not fit.
+
+    The default output directory is inside the repository, which on lxplus usually means
+    an AFS home with a 10 GB quota, and a real dataset is hundreds of gigabytes. Running
+    out halfway leaves a quota full, shards cut short, and jobs failing for a reason that
+    has nothing to do with them; this estimates the size first and says where to write
+    instead.
+    """
+    if n_files == 0 or vlen <= 0:
+        return
+    estimate = n_files * EVENTS_PER_FILE * vlen * 4 * SPACE_FACTOR
+    available = free_bytes(out_dir) if free is None else free
+    if estimate <= available:
+        return
+    raise RuntimeError(
+        f"This dataset needs about {estimate / 1e9:.1f} GB — {n_files} Parquet files, "
+        f"{vlen} features per event, vectorised and preprocessed — and {out_dir} has "
+        f"{available / 1e9:.1f} GB left"
+        + (" of its AFS quota" if os.path.realpath(out_dir).startswith("/afs/") else "")
+        + ".\nWrite it somewhere with room: set paths.eos_data_dir, for instance in "
+        "configs/local/default.yaml, to a directory in your EOS area — section 2 of the "
+        "README gives one."
+    )
+
+
 def filter_empty_events(X: np.ndarray, feature_map: dict) -> np.ndarray:
     """Mask of the events that have at least one reconstructed object.
 
@@ -635,6 +712,7 @@ def vectorize_to_local(
     manifest_strategy: str = "per_class",
     event_counts_json=None,
     drop_empty_events: bool = False,
+    skip_unreadable_files: bool = False,
 ):
     """Vectorize Parquet shards using a deterministic split manifest.
 
@@ -656,6 +734,14 @@ def vectorize_to_local(
     storage thresholds — and QCD is also the class an anomaly-detection model is
     trained on as "normal", so the filter decides the softest edge of what normal
     means. Turn it on deliberately, and say so when reporting results.
+
+    A Parquet file that cannot be read stops the run, but only after every other file
+    has been done, so one bad file does not throw away a batch job's work: the error
+    lists the files, and a batch job ends with a non-zero status. It used to be printed
+    and skipped, which left a split short while every job reported success.
+    `skip_unreadable_files` restores the skipping, for a known-bad file you choose to
+    live without; the event check before training still reports any split it leaves
+    short.
 
     Keeping them is safe for a classifier: the transformer applies no padding mask, so
     an all-zero event still yields well-defined tokens from the projection bias and the
@@ -686,6 +772,14 @@ def vectorize_to_local(
             event_counts_json=event_counts_json,
         )
         check_shards_match_manifest(eos_vec_dir, split_manifest)
+        still_to_write = sum(
+            not os.path.exists(os.path.join(eos_vec_dir, split, folder,
+                                            fn.replace(".parquet", "_x.npy")))
+            for folder, buckets in split_manifest.items()
+            for split, files in buckets.items()
+            for fn in files
+        )
+        check_output_space(eos_vec_dir, still_to_write, compute_vlen(config))
 
     check_columns_present(base_dir, split_manifest, all_cols)
 
@@ -693,6 +787,7 @@ def vectorize_to_local(
     # Vectorize files based on manifest
     # -------------------------------------------------------------------------
     split_names = ["train", "val", "test"]
+    unreadable = []
 
     for cname in class_names:
         class_folder = folder_map[cname]
@@ -743,7 +838,8 @@ def vectorize_to_local(
                             all_feats.append(feats)
                             all_labels.append(np.full((n,), label_id, dtype=np.int64))
                 except Exception as e:
-                    print(f"❌ Error reading {path}: {e}")
+                    print(f"❌ Error reading {path}: {type(e).__name__}: {e}")
+                    unreadable.append((path, f"{type(e).__name__}: {e}"))
                     continue
 
                 if not all_feats:
@@ -773,6 +869,20 @@ def vectorize_to_local(
 
                 print(f"✅ Saved {split_name}/{base}: {feats_cat.shape}")
 
+    if unreadable:
+        listing = "\n".join(f"  {path}\n      {error}" for path, error in unreadable)
+        message = (
+            f"{len(unreadable)} Parquet file(s) could not be read, so their splits are "
+            f"short by those events:\n{listing}"
+        )
+        if not skip_unreadable_files:
+            raise RuntimeError(
+                message + "\nEvery other file was vectorised, and rerunning redoes only "
+                "these. If a file is genuinely broken, set data.skip_unreadable_files=true "
+                "to go on without it."
+            )
+        print(f"⚠️  {message}\nSkipped, because data.skip_unreadable_files is set.")
+
     print(f"✅ Finished vectorizing → {eos_vec_dir}")
 
 
@@ -794,16 +904,71 @@ def worker_init_fn(worker_id):
 # ============================================================
 
 
-def count_split_events(split_dir: str) -> tuple[int, int]:
-    """(events, shards) in one split directory, read from the .npy headers.
+SHARD_ROWS_CACHE = ".shard_rows.json"
 
-    Reading the header costs one file open and no data, which is what the loader
-    does too, and it describes the shards as they are rather than as a snapshot
-    of the Parquet files says they should be.
+
+def shard_rows(split_dir: str) -> list[tuple[str, int]]:
+    """(shard name, events) for every *_x.npy in a directory, sorted by name.
+
+    The number of events is in the .npy header, and reading it means opening the file:
+    74 ms a file on EOS, measured, so a twelve-class dataset took a minute and a half
+    to check before training and as long again to plan the loader. A stat, by
+    contrast, comes back with the directory listing and costs a fraction of a
+    millisecond.
+
+    So the counts are cached in `.shard_rows.json` next to the shards, keyed by size
+    and modification time, and a header is read only for a shard that is new or has
+    changed since. The cache is written when the directory is writable and ignored
+    when it is not, which is the case for a dataset someone else owns.
     """
-    shards = sorted(f for f in os.listdir(split_dir) if f.endswith("_x.npy"))
-    events = sum(np.load(os.path.join(split_dir, f), mmap_mode="r").shape[0] for f in shards)
-    return events, len(shards)
+    cache_path = os.path.join(split_dir, SHARD_ROWS_CACHE)
+    try:
+        with open(cache_path) as f:
+            cached = json.load(f)
+    except (OSError, ValueError):
+        cached = {}
+
+    result, fresh, changed = [], {}, False
+    for entry in sorted(os.scandir(split_dir), key=lambda e: e.name):
+        if not entry.name.endswith("_x.npy"):
+            continue
+        st = entry.stat()
+        signature = [st.st_size, st.st_mtime_ns]
+        hit = cached.get(entry.name)
+        if hit is not None and hit[:2] == signature:
+            rows = hit[2]
+        else:
+            rows = int(np.load(entry.path, mmap_mode="r").shape[0])
+            changed = True
+        fresh[entry.name] = signature + [rows]
+        result.append((entry.name, rows))
+
+    if changed or set(fresh) != set(cached):
+        # Write to a private name, then rename over the cache: several readers — DDP
+        # ranks, parallel jobs — may do this at once, and each writes the same content.
+        tmp = f"{cache_path}.{os.getpid()}.tmp"
+        try:
+            with open(tmp, "w") as f:
+                json.dump(fresh, f)
+            os.replace(tmp, cache_path)
+        except OSError:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+    return result
+
+
+def count_split_events(split_dir: str) -> tuple[int, int]:
+    """(events, shards) in one split directory, from the shards themselves.
+
+    The counts describe the shards as they are rather than as a snapshot of the
+    Parquet files says they should be; `shard_rows` reads them without opening every
+    file each time.
+    """
+    shards = shard_rows(split_dir)
+    return sum(rows for _, rows in shards), len(shards)
 
 
 def has_enough_events(

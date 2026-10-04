@@ -80,6 +80,7 @@ class COLLIDE2VDataModule(LightningDataModule):
         allow_data_preparation: bool = False,
         event_counts_json: Optional[str] = None,
         drop_empty_events: bool = False,
+        skip_unreadable_files: bool = False,
     ):
         """Initialize a `COLLIDE2VDataModule`.
 
@@ -106,6 +107,7 @@ class COLLIDE2VDataModule(LightningDataModule):
         self.allow_data_preparation = allow_data_preparation
         self.event_counts_json = event_counts_json
         self.drop_empty_events = drop_empty_events
+        self.skip_unreadable_files = skip_unreadable_files
 
         self.vlen = compute_vlen(self.datasets_config)
 
@@ -178,6 +180,7 @@ class COLLIDE2VDataModule(LightningDataModule):
             manifest_strategy=self.manifest_strategy,
             event_counts_json=self.event_counts_json,
             drop_empty_events=self.drop_empty_events,
+            skip_unreadable_files=self.skip_unreadable_files,
             read_batch_size=512,
         )
 

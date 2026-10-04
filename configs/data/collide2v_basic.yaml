@@ -39,6 +39,12 @@ event_counts_json: null
 # on deliberately, give the dataset a new `label`, and say so when reporting results.
 drop_empty_events: false
 
+# A Parquet file that cannot be read stops vectorisation, after every other file has
+# been done, and names the file. true goes on without it instead: for a file you know
+# is broken and choose to leave out. The event check before training still says which
+# split is short.
+skip_unreadable_files: false
+
 preprocess: ${preprocess}
 
 

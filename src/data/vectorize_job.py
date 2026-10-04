@@ -63,6 +63,11 @@ def main(cfg: DictConfig):
         split_counts=data_cfg.train_val_test_split_per_class,
         split_manifest=split_manifest,
         parallel_processing=True,
+        # Everything that changes what is written has to reach the job, or the batch
+        # route and src/prepare_data.py build different datasets from one config.
+        # drop_empty_events did not, so batch jobs always kept empty events.
+        drop_empty_events=data_cfg.get("drop_empty_events", False),
+        skip_unreadable_files=data_cfg.get("skip_unreadable_files", False),
     )
 
 if __name__ == "__main__":
