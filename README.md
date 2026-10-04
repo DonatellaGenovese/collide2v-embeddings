@@ -594,7 +594,9 @@ python src/eval_probes.py experiment=<name> model=simclr \
     ckpt_path=logs/train/runs/<date>/checkpoints/<file>.ckpt
 ```
 
-It writes `probe_results.json` with accuracy and AUROC per split. Linear on purpose:
+It works on every model in the repository, classifiers included, so a probe on
+`tinyTransformer`'s embedding can be set next to one on SimCLR's. It writes
+`probe_results.json` with accuracy and AUROC per split. Linear on purpose:
 anything stronger measures the probe instead of the representation. The number to
 compare against is a `tinyTransformer` trained end to end on the same data — a probe that
 matches it means the embedding kept what the task needs.

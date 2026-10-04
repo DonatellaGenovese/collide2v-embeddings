@@ -16,5 +16,9 @@ class TinyMLP(nn.Module):
             nn.Linear(hidden_dim // 2, out_dim),
         )
 
+    def get_embeddings(self, x: torch.Tensor) -> torch.Tensor:
+        """The last hidden layer, hidden_dim // 2 wide: what the output layer reads."""
+        return self.net[:-1](x)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        return self.net[-1](self.get_embeddings(x))

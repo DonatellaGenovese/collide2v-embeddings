@@ -384,6 +384,11 @@ def test_a_probe_finds_nothing_in_an_embedding_that_holds_nothing():
 
 @pytest.mark.parametrize("module_path,kwargs", [
     ("src.models.template_model.TemplateLitModule", dict(hidden_dim=16)),
+    ("src.models.collide2v_tinymlp.COLLIDE2VTinyMLPLitModule",
+     dict(hidden_dim=16, lr=1e-3, weight_decay=0.0, scheduler=None, compile=False)),
+    ("src.models.collide2v_tinytransformer.COLLIDE2VTransformerLitModule",
+     dict(d_model=16, n_heads=2, num_layers=1, d_ff=32, dropout=0.0, scheduler=None,
+          compile=False)),
     ("src.models.collide2v_contrastive.COLLIDE2VContrastiveLitModule",
      dict(d_model=16, n_heads=2, num_layers=1, d_ff=32, projection_dim=8,
           hidden_projection_dim=16)),
@@ -409,7 +414,10 @@ def test_a_model_builds_from_the_datamodule_and_exposes_embeddings(module_path, 
                                    paths={"eos_preproc_dir": str(tmp_path)})
     )
     model.setup("fit")
-    model.setup("validate")  # must be idempotent
+    weights = [p.detach().clone() for p in model.parameters()]
+    model.setup("test")  # must not rebuild: the trained network has to survive this
+    assert all(torch.equal(a, b) for a, b in zip(weights, model.parameters())), \
+        "setup() rebuilt the network, so testing after training would use fresh weights"
 
     x = torch.rand(4, WIDTH)
     embeddings = model.get_embeddings(x)

@@ -89,6 +89,15 @@ class COLLIDE2VTinyMLPLitModule(LightningModule):
         """
         return self.net(x)
 
+    def get_embeddings(self, x: torch.Tensor) -> torch.Tensor:
+        """One vector per event, before the output layer.
+
+        What src/eval_probes.py reads, so a classifier's representation can be probed
+        like a contrastive encoder's. It used to exist only on the network inside this
+        module, so a probe on a trained classifier stopped with an AttributeError.
+        """
+        return self.net.get_embeddings(x)
+
     def on_train_start(self) -> None:
         """Lightning hook that is called when training begins."""
         # by default lightning executes validation step sanity checks before training starts,
@@ -212,7 +221,14 @@ class COLLIDE2VTinyMLPLitModule(LightningModule):
         them. This hook is called on every process when using DDP.
 
         :param stage: Either `"fit"`, `"validate"`, `"test"`, or `"predict"`.
+
+        Built once. Lightning calls this for every stage, and rebuilding here after
+        training replaced the trained network with a freshly initialised one before
+        `trainer.test()`: harmless when a best checkpoint is loaded back, but with none,
+        train.py reported "using current model weights" and tested random ones.
         """
+        if self.net is not None:
+            return
 
         if self.trainer and getattr(self.trainer, "datamodule", None):
             dm = self.trainer.datamodule
