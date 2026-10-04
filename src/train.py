@@ -117,8 +117,10 @@ def train(cfg: omegaconf.DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
                 log.warning("No best checkpoint found! Using current model weights.")
                 ckpt_path = None
 
-    trainer.test(model=model, datamodule=datamodule, ckpt_path=ckpt_path)
-    log.info(f"Final ckpt used: {ckpt_path}")
+        # Inside the `if`: it used to sit one level out, so test=False still ran the
+        # test pass, with ckpt_path never defined.
+        trainer.test(model=model, datamodule=datamodule, ckpt_path=ckpt_path)
+        log.info(f"Final ckpt used: {ckpt_path}")
 
     test_metrics = trainer.callback_metrics
 
