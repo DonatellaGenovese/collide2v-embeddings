@@ -142,7 +142,7 @@ python src/train.py trainer=cpu                 # force CPU even on a GPU machin
 
 Three paths matter, and the names of two of them are historical: `eos_data_dir` is simply where the shards are written and read, `tmp_data_dir` the scratch space used while writing them, and neither has to be on EOS.
 
-**On lxplus**, put the shards in your EOS user area, which has room for them, and the scratch space on AFS work. Your AFS home does not: it has a 10 GB quota, and a real dataset is hundreds of gigabytes.
+**On lxplus**, put the shards in your EOS user area, which has room for them, and the scratch space on AFS work. Your AFS home does not: it has a 10 GB quota, and a real dataset is hundreds of gigabytes. If you forget, vectorisation stops before writing and says how much it needs against how much is left.
 
 ```yaml
 # @package _global_
@@ -411,11 +411,35 @@ python scripts/parquet_plotter.py --input_dir <dataset_dir> --output_dir plots/p
 
 Compare the two. After preprocessing a feature should sit around 0 with a spread of order 1; a column of exact zeros means a `topk` slot never filled, and a lone huge outlier usually means statistics fitted on too few files.
 
-### 4.6 What still bites
+### 4.6 What is checked before anything is written
 
-- **A Parquet file that cannot be read is skipped.** The error is printed and vectorisation carries on, so a split can come out smaller than asked for while every job reports success. Read the logs, do not just check that they finished.
-- **The output paths default under the repository.** Small datasets are fine there, hundreds of gigabytes are not: set them in `configs/local/default.yaml`, as section 2 describes.
-- **Checking a dataset reads every shard header.** `has_enough_events` and the loader both open one file per shard, which on EOS costs about a minute and a half for a twelve-class dataset. It is paid once at startup.
+A vectorisation of the full dataset runs for hours on hundreds of batch jobs, so the
+failures worth having are the early ones. Before writing a shard, the pipeline checks:
+
+| Check | Stops when |
+| --- | --- |
+| Columns | a column the config asks for is not in the data — usually the EOS-only variables on a Hugging Face download. Only the first file of each class is opened. |
+| Feature map | the dataset on disk was built with different columns, and the `label` was kept. |
+| Manifest | the seed, the strategy or the split sizes differ from the ones the dataset was built with, or there are shards it does not list. Section 5 explains why. |
+| Space | the estimated size — vectorised plus preprocessed — exceeds what is left where it is going. On AFS it asks the quota with `fs listquota`, because the filesystem itself reports the whole partition: 2.2 TB free on a home directory that had 3.9 GB left. |
+
+And while writing:
+
+- **A Parquet file that cannot be read** stops the run, but only once every other file is
+  done, so one bad file does not throw away a batch job's work. The error names the
+  files, rerunning redoes only those, and a batch job ends with a failed status rather
+  than reporting success. For a file you know is broken, `data.skip_unreadable_files=true`
+  goes on without it; the event check before training still says which split came out
+  short.
+
+And on the way back in:
+
+- **Counting the events of a dataset** — before training, and to plan the loader — reads
+  each shard's size from its header, which on EOS costs 74 ms a file. The counts are
+  therefore cached in a `.shard_rows.json` in each directory, keyed by size and
+  modification time, so only a new or changed shard is opened again. Measured on 101
+  shards on EOS: 4.7 s the first time, 0.02 s after. The cache is not written where the
+  directory is read-only, such as someone else's dataset.
 
 ## 5. Which files a dataset is made of
 
