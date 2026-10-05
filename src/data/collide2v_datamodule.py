@@ -206,16 +206,31 @@ class COLLIDE2VDataModule(LightningDataModule):
 
         # Load the new, expanded feature dimension from preprocessed norm_stats.json
         norm_stats_path = os.path.join(self.paths["eos_preproc_dir"], "norm_stats.json")
-        if os.path.exists(norm_stats_path):
-            with open(norm_stats_path) as f:
-                fm = json.load(f)
-            self.vlen = fm["_meta"]["num_features_expanded"]
-            print(f"✅ Loaded preprocessed feature dimension: vlen = {self.vlen}")
-        else:
+        if not os.path.exists(norm_stats_path):
             raise FileNotFoundError(
                 f"❌ norm_stats.json not found in {self.paths['eos_preproc_dir']}. "
                 "Preprocessing must produce it."
             )
+
+    def preprocessed_width(self) -> int:
+        """Features per event after preprocessing: what a model has to be built for.
+
+        Wider than `compute_vlen(datasets_config)`, the raw width, because phi becomes
+        (sin, cos) and categories become one-hot. Read from the statistics preprocessing
+        wrote, and set in setup(). It used to be set at the end of prepare_data(), which
+        Lightning runs on one process only and which returns early when the dataset
+        already exists — so on any run against an existing dataset a model was built for
+        the raw width and failed on its first batch with "mat1 and mat2 shapes cannot be
+        multiplied".
+        """
+        norm_stats_path = os.path.join(self.paths["eos_preproc_dir"], "norm_stats.json")
+        if not os.path.exists(norm_stats_path):
+            raise FileNotFoundError(
+                f"❌ norm_stats.json not found in {self.paths['eos_preproc_dir']}: the "
+                "dataset has not been preprocessed. Run src/prepare_data.py first."
+            )
+        with open(norm_stats_path) as f:
+            return int(json.load(f)["_meta"]["num_features_expanded"])
 
     def setup(self, stage: Optional[str] = None) -> None:
         """Load data. Set variables: `self.data_train`, `self.data_val`, `self.data_test`.
@@ -234,6 +249,8 @@ class COLLIDE2VDataModule(LightningDataModule):
       #              f"Batch size ({self.hparams.batch_size}) is not divisible by the number of devices ({self.trainer.world_size})."
       #          )
       #      self.batch_size_per_device = self.hparams.batch_size // self.trainer.world_size
+
+        self.vlen = self.preprocessed_width()
 
         if has_enough_events(
             self.paths["eos_preproc_dir"],
