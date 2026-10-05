@@ -269,9 +269,13 @@ class COLLIDE2VDataModule(LightningDataModule):
                                                 per_class_limit=self.train_val_test_split_per_class[1],
                                                 shuffle_file_order=False, classnames=self.classnames,
                                                 folder_map=self.folder, seed=self.seed + 1)
+            # The test stream is shuffled as well. A full test pass reads every event, so
+            # its metrics do not depend on the order, but a partial one does: with the
+            # shards in class order, `limit_test_batches` read one class only, and the
+            # checks on lxplus reported a test accuracy of 1.0 for a model at chance.
             self.teststream = LocalVectorDataset(os.path.join(self.paths["eos_preproc_dir"], "test"),
                                                  per_class_limit=self.train_val_test_split_per_class[2],
-                                                 shuffle_file_order=False, classnames=self.classnames,
+                                                 shuffle_file_order=True, classnames=self.classnames,
                                                  folder_map=self.folder, seed=self.seed + 2)
         else:
             raise RuntimeError(
@@ -282,6 +286,9 @@ class COLLIDE2VDataModule(LightningDataModule):
 
         self.shuffled_train = ShuffleBuffer(self.trainstream, buffer_size=100000, seed=self.seed)
         self.shuffled_val = ShuffleBuffer(self.valstream, buffer_size=100000, seed=self.seed + 1)
+        # Shuffling the shards is not enough on its own: a partial pass can end inside the
+        # first shard, which holds one class. The buffer mixes events across shards.
+        self.shuffled_test = ShuffleBuffer(self.teststream, buffer_size=100000, seed=self.seed + 2)
 
     def train_dataloader(self) -> DataLoader[Any]:
         """Create and return the train dataloader.
@@ -317,7 +324,7 @@ class COLLIDE2VDataModule(LightningDataModule):
         :return: The test dataloader.
         """
         return DataLoader(
-            dataset=self.teststream,
+            dataset=self.shuffled_test,
             batch_size=self.batch_size_per_device,
             num_workers=0,
             pin_memory=self.pin_memory,

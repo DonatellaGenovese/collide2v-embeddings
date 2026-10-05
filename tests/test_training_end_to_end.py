@@ -180,3 +180,25 @@ def test_no_model_receives_an_uncallable_scheduler():
             f"{model} receives scheduler={scheduler!r}, which configure_optimizers would call"
         )
 
+
+def test_a_partial_test_pass_sees_every_class(prepared_dataset):
+    """`limit_test_batches` must give a sample, not the first class.
+
+    The test stream used to follow the shards in class order, so a quick check with a
+    few test batches read QCD only: on lxplus it reported a test accuracy of 1.0 for a
+    model at chance, and a SupCon test loss of exactly zero, since a single-class batch
+    has no negatives.
+    """
+    import hydra
+
+    cfg = composed(prepared_dataset, "tinyMLP")
+    datamodule = hydra.utils.instantiate(cfg.data)
+    datamodule.setup("test")
+
+    labels = []
+    for i, (_, y) in enumerate(datamodule.test_dataloader()):
+        labels.extend(y.tolist())
+        if i == 1:  # the first two batches, as limit_test_batches=2 would read
+            break
+
+    assert len(set(labels)) == len(CLASSES), f"two test batches held classes {set(labels)}"
