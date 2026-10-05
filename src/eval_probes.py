@@ -156,7 +156,11 @@ def main(cfg: DictConfig) -> None:
     model.trainer = None
     model._trainer = type("T", (), {"datamodule": datamodule})()
     model.setup("test")
-    state = torch.load(cfg.ckpt_path, map_location="cpu")
+    # weights_only=False, as Lightning itself loads its checkpoints: they hold the
+    # hyperparameters too, among them the optimizer as a functools.partial, which the
+    # default since PyTorch 2.6 refuses — every probe failed on that in a fresh process.
+    # It unpickles arbitrary objects, so load only checkpoints you produced yourself.
+    state = torch.load(cfg.ckpt_path, map_location="cpu", weights_only=False)
     missing, unexpected = model.load_state_dict(state["state_dict"], strict=False)
     if missing:
         log.warning(f"Not in the checkpoint: {missing}")

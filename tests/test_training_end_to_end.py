@@ -141,6 +141,11 @@ def test_the_probe_runs_on_a_checkpoint_from_train_py(prepared_dataset, model):
         cfg.probe = {"train_events": 80, "epochs": 5, "batch_size": 16}
     os.makedirs(cfg.paths.output_dir, exist_ok=True)
 
+    # A probe is run as its own command, in a fresh interpreter. Training in this process
+    # loaded a checkpoint for its test pass, and Lightning allowlisted functools.partial
+    # for torch.load while doing it — which once hid a probe that failed everywhere else.
+    torch.serialization.clear_safe_globals()
+
     probe_main.__wrapped__(cfg)
 
     assert os.path.exists(os.path.join(cfg.paths.output_dir, "probe_results.json"))
@@ -174,3 +179,4 @@ def test_no_model_receives_an_uncallable_scheduler():
         assert scheduler is None or callable(scheduler), (
             f"{model} receives scheduler={scheduler!r}, which configure_optimizers would call"
         )
+
