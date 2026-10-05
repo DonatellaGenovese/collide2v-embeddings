@@ -186,7 +186,9 @@ run_as_owner = True
 # the default PATH covers.
 getenv = False
 request_cpus = 4
-environment = "OMP_NUM_THREADS=4; MKL_NUM_THREADS=4"
+# Space-separated inside the quotes: with "; " the value of OMP_NUM_THREADS became
+# "4;", which libgomp rejects, so the job ignored it and used every core.
+environment = "OMP_NUM_THREADS=4 MKL_NUM_THREADS=4"
 
 queue
 """
