@@ -1,2 +1,8 @@
-# @package model.scheduler
-null
+# @package _global_
+#
+# No learning-rate scheduler. Written as `model.scheduler: null` at the top level rather
+# than as a bare `null` in the model.scheduler package: Hydra merges a bare null as an
+# empty mapping, so the model received {} — not None — and tried to call it, which
+# failed in configure_optimizers for every model that left the scheduler at its default.
+model:
+  scheduler: null
