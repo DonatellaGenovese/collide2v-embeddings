@@ -17,6 +17,7 @@ class MCROC(Callback):
         self.device = None
         self.num_classes = None
         self._warned_about_probs = False
+        self._seen = False
 
     def on_validation_start(self, trainer, pl_module):
         """Do checks required for this callback to work."""
@@ -24,40 +25,47 @@ class MCROC(Callback):
         self.num_classes = trainer.datamodule.num_classes
         self.class_names = trainer.datamodule.classnames
 
+    def _probs(self, pl_module, outputs):
+        """The class probabilities a step returned, or None, said once per run.
+
+        A callback cannot reach inside a step, so a model has to return
+        {"probs": ...} for the per-class AUROC to exist. Not every model can — a
+        contrastive one without its diagnostic head has no class probabilities — so a
+        missing one is reported and the callback steps aside, at batch level and at the
+        end of the epoch, where computing an AUROC over nothing used to fail too.
+        """
+        probs = outputs.get("probs") if isinstance(outputs, dict) else None
+        if probs is None and not self._warned_about_probs:
+            print(
+                f"⚠️  {type(pl_module).__name__} returns no 'probs' from validation_step "
+                "or test_step, so the per-class AUROC (val/class_*_auc, val/mean_auc, "
+                "test/...) will not be logged. Return {'probs': softmax(logits)} to get "
+                "them, or drop multiclassROC from the callbacks."
+            )
+            self._warned_about_probs = True
+        return probs
+
     def on_validation_epoch_start(self, trainer, pl_module):
         """Clear the metrics dictionary at the start of the epoch."""
         self.mcauc = MulticlassAUROC(num_classes=self.num_classes, average=None).to(self.device)
+        self._seen = False
 
     def on_validation_batch_end(
         self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
     ):
-        """Accumulate the per-class AUROC from what validation_step returned.
-
-        A model has to return {"probs": ...} for this to work, since a callback cannot
-        reach inside a validation step. Not every model does — a contrastive one has no
-        class probabilities to offer unless its diagnostic head is on — so a missing one
-        is reported once and the callback steps aside. It used to raise
-        "'NoneType' object is not subscriptable" on the first validation batch.
-        """
+        """Accumulate the per-class AUROC from what validation_step returned."""
         self.total_batches = trainer.num_val_batches
         _, labels = batch
-
-        probs = outputs.get("probs") if isinstance(outputs, dict) else None
+        probs = self._probs(pl_module, outputs)
         if probs is None:
-            if not self._warned_about_probs:
-                print(
-                    f"⚠️  {type(pl_module).__name__}.validation_step returns no 'probs', "
-                    "so the per-class AUROC (val/class_*_auc, val/mean_auc) will not be "
-                    "logged. Return {'probs': softmax(logits)} from validation_step to "
-                    "get them, or drop multiclassROC from the callbacks."
-                )
-                self._warned_about_probs = True
             return
-
         self.mcauc.update(probs, labels)
+        self._seen = True
 
     def on_validation_epoch_end(self, trainer, pl_module) -> None:
         """Log the anomaly rates computed on each of the data sets."""
+        if not self._seen:
+            return
         aurocs = self.mcauc.compute()
         for idx, auroc in enumerate(aurocs):
             classname = self.class_names[idx]
@@ -92,17 +100,24 @@ class MCROC(Callback):
         """Clear the metrics dictionary at the start of the epoch."""
         self.mcroc = MulticlassROC(num_classes=self.num_classes, average=None).to(self.device)
         self.mcauc = MulticlassAUROC(num_classes=self.num_classes, average=None).to(self.device)
+        self._seen = False
 
     def on_test_batch_end(
         self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
     ):
-        """Determine the rate for every given metric for every test data set."""
+        """Accumulate the per-class ROC and AUROC from what test_step returned."""
         _, labels = batch
-        self.mcauc.update(outputs['probs'], labels)
-        self.mcroc.update(outputs['probs'], labels)
+        probs = self._probs(pl_module, outputs)
+        if probs is None:
+            return
+        self.mcauc.update(probs, labels)
+        self.mcroc.update(probs, labels)
+        self._seen = True
 
     def on_test_epoch_end(self, trainer, pl_module) -> None:
         """Log the anomaly rates computed on each of the data sets."""
+        if not self._seen:
+            return
         fprs, tprs, thres = self.mcroc.compute()
         aurocs = self.mcauc.compute()
         for idx, auroc in enumerate(aurocs):

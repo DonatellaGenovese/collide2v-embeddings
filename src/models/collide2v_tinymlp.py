@@ -209,6 +209,10 @@ class COLLIDE2VTinyMLPLitModule(LightningModule):
         self.log("test/loss", self.test_loss, on_step=False, on_epoch=True, prog_bar=True)
         self.log("test/acc", self.test_acc, on_step=False, on_epoch=True, prog_bar=True)
 
+        # What the multiclassROC and savelogits callbacks read; without it the test pass
+        # of a default run failed in the ROC callback.
+        return {"probs": probs, "logits": torch.log(probs.clamp_min(1e-12))}
+
     def on_test_epoch_end(self) -> None:
         """Lightning hook that is called when a test epoch ends."""
         pass

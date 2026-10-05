@@ -153,11 +153,13 @@ class TemplateLitModule(LightningModule):
         self.log("val/acc", self.val_acc, on_step=False, on_epoch=True, prog_bar=True)
         return {"probs": probs}
 
-    def test_step(self, batch, batch_idx: int) -> None:
-        loss, _, preds, targets = self.model_step(batch)
+    def test_step(self, batch, batch_idx: int):
+        """Returns what the test-time callbacks read, as validation_step does."""
+        loss, probs, preds, targets = self.model_step(batch)
         self.test_acc(preds, targets)
         self.log("test/loss", loss, on_step=False, on_epoch=True)
         self.log("test/acc", self.test_acc, on_step=False, on_epoch=True)
+        return {"probs": probs, "logits": torch.log(probs.clamp_min(1e-12))}
 
     def on_validation_epoch_end(self) -> None:
         """`val/acc_best` is what the sweeps optimise, so it has to be logged."""

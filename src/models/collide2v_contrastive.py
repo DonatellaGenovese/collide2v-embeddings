@@ -155,6 +155,7 @@ class COLLIDE2VContrastiveLitModule(LightningModule):
             self.classification_head = nn.Linear(self.hparams.d_model, num_classes)
             self.train_acc = Accuracy(task="multiclass", num_classes=num_classes)
             self.val_acc = Accuracy(task="multiclass", num_classes=num_classes)
+            self.test_acc = Accuracy(task="multiclass", num_classes=num_classes)
 
         if self.hparams.compile and stage == "fit":
             self.encoder = torch.compile(self.encoder)
@@ -279,11 +280,17 @@ class COLLIDE2VContrastiveLitModule(LightningModule):
         # What the multiclassROC callback reads, for val/mean_auc.
         return {"probs": result["probs"]}
 
-    def test_step(self, batch, batch_idx: int) -> None:
+    def test_step(self, batch, batch_idx: int) -> Optional[Dict[str, torch.Tensor]]:
         result = self.model_step(batch)
         self.log("test/contrastive_loss", result["contrastive_loss"], on_step=False, on_epoch=True)
-        if "preds" in result:
-            self.log("test/acc", self.val_acc(result["preds"], batch[1]), on_step=False, on_epoch=True)
+        if "probs" not in result:
+            return None
+        # A metric of its own: this used to update val_acc, mixing test batches into the
+        # validation accuracy's state.
+        self.test_acc(result["preds"], batch[1])
+        self.log("test/acc", self.test_acc, on_step=False, on_epoch=True)
+        return {"probs": result["probs"],
+                "logits": torch.log(result["probs"].clamp_min(1e-12))}
 
     def on_validation_epoch_end(self) -> None:
         if self.hparams.use_classification_head:
