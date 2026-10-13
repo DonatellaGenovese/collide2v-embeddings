@@ -93,22 +93,22 @@ export FM_TESTING_IMAGE=/eos/user/<l>/<username>/fm_testing.sif
 mkdir -p $APPTAINER_CACHEDIR
 apptainer build $FM_TESTING_IMAGE fm_testing.def
 
-# 3. A shorthand for running a command inside the container, and a check that it works.
-alias crun='apptainer exec --bind /eos:/eos --bind /afs:/afs --bind /run/user/$(id -u) $FM_TESTING_IMAGE'
-crun bash -c 'python -c "import torch, lightning, hydra" && ls /eos/project/f/foundational-model-dataset/samples/production_final > /dev/null && echo ok'
+# 3. Check that it works: the packages import, and EOS can be read from inside.
+apptainer exec --bind /eos:/eos --bind /afs:/afs --bind /run/user/$(id -u) $FM_TESTING_IMAGE \
+    bash -c 'python -c "import torch, lightning, hydra" && ls /eos/project/f/foundational-model-dataset/samples/production_final > /dev/null && echo ok'
 ```
 
-`<username>` is your CERN login and `<l>` its first letter. `export` and `alias` last only as long as the shell, so put the `FM_TESTING_IMAGE` and `crun` lines in your `~/.bashrc`, or repeat them in each new terminal. Check with `echo $FM_TESTING_IMAGE` before building: a stale value fails only at the very end, after the whole installation.
+`<username>` is your CERN login and `<l>` its first letter. `export` lasts only as long as the shell, so put the `FM_TESTING_IMAGE` line in your `~/.bashrc`, or repeat it in each new terminal. Check with `echo $FM_TESTING_IMAGE` before building: a stale value fails only at the very end, after the whole installation.
 
 The three binds are all needed. The container sees neither `/eos` nor `/afs` unless they are bound, and EOS lets you in only with your Kerberos ticket, which lxplus keeps in `/run/user/<your uid>`: without that bind every read from EOS fails with `Permission denied`. The check above reads EOS for that reason; an import alone would pass.
 
-From then on, every command in this README that starts with `python` is meant to run inside the container, so on lxplus put `crun` in front of it:
+From then on, on lxplus, every command in this README that starts with `python` runs inside the container, from the repository root:
 
 ```bash
-crun python src/train.py
+apptainer exec --bind /eos:/eos --bind /afs:/afs --bind /run/user/$(id -u) $FM_TESTING_IMAGE python src/prepare_data.py experiment=fm_testing_binary
 ```
 
-For the GPU, add `--nv` after `apptainer exec` in the alias, or define a second one. Batch jobs do not use the alias: their wrappers call the container themselves (section 4.2).
+Batch jobs start the container themselves (sections 4.2 and 6.1); `condor_submit` and `scripts/submit_env.sh` run outside it.
 
 ### Anywhere else
 
@@ -137,7 +137,6 @@ Then ask for the GPU at run time. The trainer is chosen by config, so you never 
 ```bash
 python src/train.py trainer=gpu                 # one GPU, bf16 mixed precision
 python src/train.py trainer=gpu trainer.devices=2
-python src/train.py trainer=cpu                 # force CPU even on a GPU machine
 ```
 
 
@@ -320,10 +319,11 @@ Two things to get right in your experiment file, both commented there: give a ne
 
 Training never builds a dataset: when the one it needs is missing it stops and points here. Rerunning any of the commands below is safe: what is already built is skipped.
 
-**On lxplus, a dataset of a few files per class**, on the login node, inside the container (`crun`, section 2):
+**On lxplus, a dataset of a few files per class**, on the login node, inside the container (section 2):
 
 ```bash
-crun python src/prepare_data.py experiment=fm_testing_binary
+apptainer exec --bind /eos:/eos --bind /afs:/afs --bind /run/user/$(id -u) $FM_TESTING_IMAGE \
+    python src/prepare_data.py experiment=fm_testing_binary
 ```
 
 `fm_testing_binary`, QCD against ggH→bb with 50k training events each, takes minutes and is the one to start from.
@@ -362,7 +362,7 @@ Everything goes under `<eos_data_dir>/<label>/`. Shards are written to scratch s
     └── train|val|test/<process>/<file>_x.npy, _y.npy
 ```
 
-Each Parquet file gives one pair of shards: `_x.npy` holds the events, `(events, features)` in float32, and `_y.npy` their class as an integer. Use `feature_map.json` to find a column rather than counting by hand:
+Each Parquet file gives one pair of shards: `_x.npy` holds the events, `(events, features)` in float32, and `_y.npy` their class as an integer. Use `feature_map.json` to find a column:
 
 ```python
 import json, numpy as np
@@ -397,83 +397,54 @@ A Parquet file that cannot be read stops the run once every other file is done, 
 
 ## 5. Which files a dataset is made of
 
-A dataset here is not "the COLLIDE-2V sample": it is a particular set of Parquet files, cut into train, val and test, and a particular set of events read from them. Two runs are comparable only if that set is the same, so it is written down, checked, and reproducible from a seed.
+A dataset is a particular set of Parquet files, split into train, val and test, and a particular set of events read from them. Two runs are comparable only if that set is the same, so it is written down when the dataset is built and checked every time it is reused.
 
 ### 5.1 The manifest
 
-`split_manifest.json`, next to the vectorised shards, records which file went to which split, and under `_meta` the seed, the strategy and the split sizes that produced it:
+`split_manifest.json`, in `vectorized/`, records which file went to which split, and under `_meta` the settings that chose them:
 
 ```json
 {
-  "_meta": {"seed": 42, "manifest_strategy": "per_class", "split_counts": [1000000, 100000, 100000]},
-  "QCD_HT50toInf": {"train": ["QCD_HT50toInf-NEVENT10000-RS26000001.parquet", "..."],
+  "_meta": {"seed": 42, "manifest_strategy": "per_class", "split_counts": [50000, 10000, 10000]},
+  "QCD_HT50toInf": {"train": ["QCD_HT50toInf-NEVENT10000-RS26002589.parquet", "..."],
                     "val": ["..."], "test": ["..."]}
 }
 ```
 
-Files are assigned whole, and a split stops as soon as it holds the events asked for, so the first file of each split is where the previous one stopped. The rules around that file are what matter:
+Files are assigned whole, so a split usually holds a little more than it asked for. Once written, the manifest decides what a `label` contains, and the pipeline holds you to it:
 
-- **An existing manifest is never rewritten.** It is reused as it is, and only *extended*, with classes it does not yet cover.
-- **A run that does not match it stops.** Change the seed, the strategy or the split sizes of a dataset that already exists and the run refuses, naming both values, and tells you to use a new `data.label`. The shards on disk were chosen by the stored settings; mixing in files drawn differently would leave one directory holding two samples.
-- **Shards the manifest does not list stop the run too.** For a dataset built before the manifest recorded its metadata this is a warning instead, since those predate the rule.
+| If you | The run |
+| --- | --- |
+| rerun with the same settings | reuses the manifest and builds only what is missing |
+| add a class to `to_classify` | extends the manifest with that class and leaves the others alone |
+| change the seed, the strategy or the event counts | stops, names the value that differs, and asks for a new `label` |
+| change the variables (`datasets_config`) | stops: `feature_map.json` no longer matches, so the shards would have different columns |
+| leave shards on disk that the manifest does not list | stops, and names them |
 
-To plan the splits without opening every Parquet file, the manifest reads how many events each file holds from `src/utils/nEvents_scan/file_event_counts.json`, a snapshot of the copy on EOS. It is used for nothing else: how many events a dataset actually contains is read from its shards. For files the snapshot does not list (a Hugging Face download, or an updated dataset) regenerate it with `src/utils/nEvents_scan/scan_parquet_nevent.py` and point `data.event_counts_json` at the new file. The download script in section 3 does this for you.
-
-- **The columns are fixed as well.** The manifest says which files a dataset holds, not which features were taken from them, so `feature_map.json` is compared too: change `datasets_config` and keep the `label`, and the run stops rather than adding shards of a different width — or, worse, the same width with different columns in them.
+To plan the splits without opening every Parquet file, the manifest reads how many events each file holds from `src/utils/nEvents_scan/file_event_counts.json`, a snapshot of the copy on EOS. For files it does not list, such as a Hugging Face download, regenerate it with `src/utils/nEvents_scan/scan_parquet_nevent.py` and point `data.event_counts_json` at the new file; the download script of section 3 does this for you.
 
 ### 5.2 Seeds
 
-`data.seed` decides the draw and is inherited from the global `seed`, so one seed describes a whole run.
+`data.seed` decides which files are drawn. It is inherited from the global `seed`, so one number describes a whole run. With the default `data.manifest_strategy: per_class`, each class draws with its own generator, so adding or removing a class does not change the files of the others. `legacy` exists only to rebuild datasets made before this.
 
-`data.manifest_strategy` decides how it is used:
+### 5.3 Which events training reads
 
-| Strategy | How the files are drawn |
-| --- | --- |
-| `per_class` (default) | One generator per class, seeded from the class name. The files of a class depend only on that class, the seed and the targets. |
-| `legacy` | One generator shared by all classes, in config order. Only to rebuild a dataset produced before `per_class` existed. |
-
-Under `legacy`, adding or removing one class in `to_classify` shifts the draw of every class after it, so a dataset could not be extended or reduced without rebuilding all of it, and two studies that differed by one class shared no files. Under `per_class`, adding a class leaves the others untouched and the manifest is simply extended.
-
-### 5.3 Which events the loader reads
-
-The sample is decided once, in the main process, as a plan of which rows of which shard belong to the epoch, and only then handed to the DataLoader workers. So:
+The events of an epoch are chosen once, before the data loader starts, so:
 
 - asking for N events per class gives exactly N, or all of them with a warning when a class has fewer;
-- `num_workers` changes how fast an epoch is read and nothing else;
-- when one shard of a class is used only partly, its rows are drawn with the seed rather than taken from the top of the file.
-
-Each split draws with its own seed, so `val` does not take the same rows of the same shards as `train`.
+- `num_workers` changes how fast an epoch is read, and nothing else;
+- when only part of a shard is needed, its rows are drawn with the seed, not taken from the top of the file.
 
 ### 5.4 Empty events
 
-Some events reach the file with nothing reconstructed in them: no jet, no electron, no muon, no photon above the thresholds at which objects are stored. Vectorised, such an event is a row of zeros. `data.drop_empty_events` decides whether those rows are written at all; it is off by default, so they are.
+Some events have nothing reconstructed in them: no jet, electron, muon or photon above the storage thresholds. Vectorised, they are rows of zeros, about 5% of `QCD_HT50toInf` and under 0.5% of everything else. `data.drop_empty_events` removes them during vectorisation; it is off by default.
 
-It belongs in this section because it changes what the dataset contains, so it is part of what identifies one, like the seed. And because it acts during vectorisation, changing your mind means vectorising again, into a new `label` — it cannot be switched at training time.
-
-**How many events it concerns:** about 5% of `QCD_HT50toInf`, and under 0.5% of everything else. QCD is generated with HT > 50 GeV, so a real fraction of it leaves nothing above the storage thresholds; the other processes nearly always produce something.
-
-**When to turn it on.** For a contrastive model: every empty event is the same point, both augmented views of it are identical, and a block of duplicate samples is exactly what those objectives are sensitive to. Also when rebuilding the datasets behind the published study, which were produced with it on — that is the `nosparse` in their labels.
-
-**When to leave it off.** For a classifier, which handles a row of zeros without trouble, and whenever you want the dataset to be what the generator produced. Note that QCD is also the class an anomaly-detection model is trained on as "normal", so this choice moves the soft edge of what it considers normal: say which way you set it when you report a result.
+It is a physics choice, not a technical one. Turn it on for a contrastive model, where every empty event is the same point, and to rebuild the datasets of the published study (the `nosparse` in their labels). Leave it off for a classifier, or when the dataset should be what the generator produced. QCD is the class an anomaly-detection model learns as normal, so this moves the edge of what it considers normal: say which way you set it when you report a result. Changing it means vectorising again, into a new `label`.
 
 ### 5.5 Reproducing a dataset
 
-Keep the `label`, the `seed`, the strategy, the split sizes and `drop_empty_events`, and you get the same files and the same events. Change any of them and give the dataset a new `label`: that is the one rule the rest depends on.
+Keep the `label`, the `seed`, the strategy, the event counts, the variables and `drop_empty_events`, and you get the same files and the same events. Change any of them, and give the dataset a new `label`.
 
-To rebuild a dataset produced before all this, point the config at its directory and its stored manifest is used as it is. If it has no `_meta`, the run says so and uses it anyway.
-
-### 5.6 Checking it yourself
-
-```bash
-pytest                                      # the whole suite, nothing needs EOS
-pytest tests/test_pipeline_determinism.py   # just the pipeline, on Parquet it writes itself
-```
-
-Those tests vectorise and preprocess a small fake dataset twice and require the shards to be identical, read it with several worker counts and require the same events, and delete a preprocessed shard to check it is rebuilt identically without refitting the statistics.
-
-The suite should end green with a dozen tests skipped: those are the ones inherited from the template, which train on the default configuration and therefore need a real dataset. The skip reason says so. If one of them fails rather than skips, that is a bug worth reporting.
-
-GitHub Actions runs the same suite on every push and pull request, on Python 3.10 and 3.11, plus the four `pre-commit` hooks. So a red tick means something real; it was not always so.
 
 ---
 
@@ -481,25 +452,70 @@ GitHub Actions runs the same suite on every push and pull request, on Python 3.1
 
 ### 6.1 Running a training
 
-The dataset has to exist first, as section 4.2 says; training will not build it.
+The dataset has to exist first (section 4): training reads `<eos_data_dir>/<label>/preprocessed/` and stops if it is not there.
+
+Training runs on a GPU. The ordinary lxplus login nodes have none, so on lxplus a run goes either to `lxplus-gpu.cern.ch`, for short interactive tests, or to HTCondor, for everything else.
+
+**On lxplus, interactively**, on a GPU login node, inside the container with `--nv`, from the repository root:
 
 ```bash
-python src/train.py experiment=fm_testing_binary trainer=cpu        # the small one
-python src/train.py experiment=fm_testing_18class_highlevel         # the default, on GPU
-python src/train.py experiment=<name> model=supcon                  # a different model
+ssh lxplus-gpu.cern.ch
+cd /afs/cern.ch/user/<l>/<username>/collide2v-embeddings
+apptainer exec --nv --bind /eos:/eos --bind /afs:/afs --bind /run/user/$(id -u) $FM_TESTING_IMAGE \
+    python src/train.py experiment=fm_testing_binary
 ```
 
-Everything about a run lands in `logs/train/runs/<date>/`: the composed config, the
-checkpoints, and the metrics. To evaluate a checkpoint rather than train, use
-`src/eval.py ckpt_path=<path>`; to send a training to HTCondor, `condor_submit
-src/train_full_pipeline.sub`, whose logs go to `logs/condor_logs/`.
-
-Before a long run, prove the wiring in a minute:
+These nodes are shared, so keep it short. Before a long run, check the wiring in a few minutes:
 
 ```bash
-python src/train.py experiment=<name> model=<name> trainer=cpu \
-    +trainer.limit_train_batches=5 +trainer.limit_val_batches=2
+apptainer exec --nv --bind /eos:/eos --bind /afs:/afs --bind /run/user/$(id -u) $FM_TESTING_IMAGE \
+    python src/train.py experiment=<name> \
+    trainer.max_epochs=1 +trainer.limit_train_batches=5 +trainer.limit_val_batches=2
 ```
+
+**On lxplus, on HTCondor**, from the repository root, **outside the container**, with `FM_TESTING_IMAGE` set as in section 2. The job starts the container itself.
+
+```bash
+mkdir -p logs/condor_logs                                    # once: HTCondor does not create it
+condor_submit src/train_full_pipeline.sub EXPERIMENT=fm_testing_binary
+condor_submit src/train_full_pipeline.sub EXPERIMENT=<name> ARGS="model=supcon trainer.max_epochs=50"
+condor_submit src/train_full_pipeline.sub EXPERIMENT=<name> ARGS="-m hparams_search=collide2v_optuna_multiclass"
+```
+
+`EXPERIMENT` is required. `ARGS` takes any further overrides, separated by spaces. Each job asks for one GPU with at least 40 GB, so it can wait in the queue for a while. The last line is a hyperparameter sweep (section 7). The job's own output goes to `logs/condor_logs/train_<cluster>.out` and `.err`; the run itself lands under `log_dir` like any other.
+
+**Off lxplus, with files from Hugging Face**, with the same `label` and event counts the dataset was built with in section 4.2:
+
+```bash
+python src/train.py experiment=fm_testing_binary \
+    data.label=hf_binary 'data.train_val_test_split_per_class=[8000, 8000, 8000]'
+```
+
+The machine needs a GPU that PyTorch can see; section 2 shows how to check.
+
+**What a run leaves**, in `<log_dir>/train/runs/<date>_<time>/`:
+
+```
+.hydra/config.yaml      # the full configuration the run used
+checkpoints/            # epoch_NNN.ckpt for the best epoch, and last.ckpt
+train.log               # everything printed
+roc_plots/, test_predictions/
+```
+
+and its metrics in MLflow, under `<log_dir>/mlflow/mlruns` (section 7).
+
+**Evaluating a checkpoint** takes the configuration of the run it came from, so only the checkpoint is needed:
+
+```bash
+# on lxplus-gpu, interactively
+apptainer exec --nv --bind /eos:/eos --bind /afs:/afs --bind /run/user/$(id -u) $FM_TESTING_IMAGE \
+    python src/eval.py ckpt_path=<log_dir>/train/runs/<date>_<time>/checkpoints/last.ckpt
+
+# on HTCondor, outside the container
+condor_submit src/eval.sub CKPT=<log_dir>/train/runs/<date>_<time>/checkpoints/last.ckpt
+```
+
+
 
 ### 6.2 The models
 
@@ -585,7 +601,7 @@ Then:
 ```bash
 cp src/models/template_model.py src/models/my_model.py
 cp configs/model/template.yaml configs/model/my_model.yaml   # change _target_
-python src/train.py experiment=fm_testing_binary model=my_model trainer=cpu \
+python src/train.py experiment=fm_testing_binary model=my_model \
     +trainer.limit_train_batches=5 +trainer.limit_val_batches=2
 ```
 
