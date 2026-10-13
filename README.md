@@ -2,7 +2,7 @@
 
 # COLLIDE-2V embeddings
 
-**Vectorise the COLLIDE-2V dataset, train classifiers and contrastive encoders on it, and evaluate the embeddings they produce.**
+**Vectorise the COLLIDE-2V dataset, train classifiers and construct neural embedding on it.**
 
 <a href="https://pytorch.org/get-started/locally/"><img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-ee4c2c?logo=pytorch&logoColor=white"></a>
 <a href="https://pytorchlightning.ai/"><img alt="Lightning" src="https://img.shields.io/badge/-Lightning-792ee5?logo=pytorchlightning&logoColor=white"></a>
@@ -60,7 +60,7 @@ It follows the [lightning-hydra-template](https://github.com/ashleve/lightning-h
 
 | Part | State |
 | --- | --- |
-| Vectorisation and preprocessing | Working. What still bites is listed in section 4.6. |
+| Vectorisation and preprocessing | Working, locally and on HTCondor. What stops a run, and why, is in section 4.4. |
 | tinyMLP, tinyTransformer classifiers | Working. See section 6.2. |
 | Reading the dataset from EOS | Working. |
 | Reading a Hugging Face download | Supported: `scripts/download_collide_subset.py` fetches a subset and scans its event counts, and the default feature set is the one both copies have. See section 3. |
@@ -80,30 +80,35 @@ The code is the same in both cases. What changes is where the data sits, where t
 
 ```bash
 # 1. Clone, on AFS. Do not clone onto /eos: batch jobs cannot execute files there.
-cd /afs/cern.ch/user/<first letter>/<username>
+cd /afs/cern.ch/user/<l>/<username>
 git clone https://github.com/DonatellaGenovese/collide2v-embeddings.git
 cd collide2v-embeddings
 
 # 2. Build the container. It installs everything in requirements.txt.
-#    Expect a few minutes and a .sif file of about 9 GB: your AFS home directory
-#    has a 10 GB quota, so build it under /afs/cern.ch/work/... or on EOS, and tell
-#    the wrapper scripts where it is with FM_TESTING_IMAGE. The build cache lives in
-#    ~/.apptainer and fills that quota too; APPTAINER_CACHEDIR moves it.
-export APPTAINER_CACHEDIR=/afs/cern.ch/work/<letter>/<user>/.apptainer
-export FM_TESTING_IMAGE=/afs/cern.ch/work/<letter>/<user>/fm_testing.sif
+#    Expect about half an hour and a .sif file of about 7 GB, which does not fit in
+#    your AFS home (10 GB quota). Put it on your EOS area, and the build cache on
+#    the node's local /tmp. Apptainer does not create the cache directory itself.
+export APPTAINER_CACHEDIR=/tmp/<username>/.apptainer
+export FM_TESTING_IMAGE=/eos/user/<l>/<username>/fm_testing.sif
+mkdir -p $APPTAINER_CACHEDIR
 apptainer build $FM_TESTING_IMAGE fm_testing.def
 
-# 3. Check that it works. /eos must be bound explicitly, it is not visible by default.
-apptainer exec --bind /eos:/eos --bind /afs:/afs $FM_TESTING_IMAGE python -c "import torch, lightning, hydra; print('ok')"
+# 3. A shorthand for running a command inside the container, and a check that it works.
+alias crun='apptainer exec --bind /eos:/eos --bind /afs:/afs --bind /run/user/$(id -u) $FM_TESTING_IMAGE'
+crun bash -c 'python -c "import torch, lightning, hydra" && ls /eos/project/f/foundational-model-dataset/samples/production_final > /dev/null && echo ok'
 ```
 
-From then on, every command in this README that starts with `python` is meant to run inside the container:
+`<username>` is your CERN login and `<l>` its first letter. `export` and `alias` last only as long as the shell, so put the `FM_TESTING_IMAGE` and `crun` lines in your `~/.bashrc`, or repeat them in each new terminal. Check with `echo $FM_TESTING_IMAGE` before building: a stale value fails only at the very end, after the whole installation.
+
+The three binds are all needed. The container sees neither `/eos` nor `/afs` unless they are bound, and EOS lets you in only with your Kerberos ticket, which lxplus keeps in `/run/user/<your uid>`: without that bind every read from EOS fails with `Permission denied`. The check above reads EOS for that reason; an import alone would pass.
+
+From then on, every command in this README that starts with `python` is meant to run inside the container, so on lxplus put `crun` in front of it:
 
 ```bash
-apptainer exec --bind /eos:/eos --bind /afs:/afs fm_testing.sif python src/train.py
+crun python src/train.py
 ```
 
-Add `--nv` to that command when you want the GPU.
+For the GPU, add `--nv` after `apptainer exec` in the alias, or define a second one. Batch jobs do not use the alias: their wrappers call the container themselves (section 4.2).
 
 ### Anywhere else
 
@@ -136,49 +141,57 @@ python src/train.py trainer=cpu                 # force CPU even on a GPU machin
 ```
 
 
-**Your own data.** Off lxplus there is no dataset until you fetch one: `python scripts/download_collide_subset.py --list` shows what the public copy holds, and section 3 has the two commands that turn a few of its files into a dataset.
+### Setting your paths
 
-**Your own paths.** By default the shards are written under `data/` inside the repository, which is enough for a small dataset and is already in `.gitignore`; the Parquet files are read from the copy on EOS, which off lxplus does not exist. Rather than editing `configs/paths/fm_testing.yaml`, which everyone shares, put your own values in `configs/local/default.yaml`. Both `configs/train.yaml` and `configs/vectorize_preprocess.yaml` end their defaults list with `- optional local: default`, so Hydra loads that file when it exists and carries on when it does not, and `.gitignore` already lists it, so your settings are never committed and never collide with anyone else's:
+The pipeline reads and writes data in four places, defined in `configs/paths/fm_testing.yaml`:
 
-Three paths matter, and the names of two of them are historical: `eos_data_dir` is simply where the shards are written and read, `tmp_data_dir` the scratch space used while writing them, and neither has to be on EOS.
+| Path | What the pipeline does there |
+| --- | --- |
+| `dataset_dir` | **reads** the COLLIDE-2V Parquet files, the input. |
+| `eos_data_dir` | **writes** the dataset it builds from them, the `.npy` shards, which training then reads. Section 4.3 shows what lands there. |
+| `tmp_data_dir` | **writes temporarily** while building: shards go here first and are moved to `eos_data_dir` when complete. |
+| `log_dir` | **writes** the output of each run: its configuration, checkpoints, and the mlflow runs. |
 
-**On lxplus**, put the shards in your EOS user area, which has room for them, and the scratch space on AFS work. Your AFS home does not: it has a 10 GB quota, and a real dataset is hundreds of gigabytes. If you forget, vectorisation stops before writing and says how much it needs against how much is left.
+Do not edit `configs/paths/fm_testing.yaml`: it is tracked by Git, so your paths would end up in commits and in other people's defaults. Create `configs/local/default.yaml` yourself (the folder holds only a `.gitkeep`, which keeps it in Git) and set your values in it: Hydra reads it after the shared file, so what you write wins, and Git ignores it. Replace `<username>` with your CERN login and `<l>` with its first letter.
+
+**On lxplus**, the Parquet files are read from the copy on EOS, which `dataset_dir` already points at, so leave it out. Everything the pipeline writes goes to your EOS area, because your AFS home is too small for it:
 
 ```yaml
 # @package _global_
-# configs/local/default.yaml — replace <l> with the first letter of your username
+# configs/local/default.yaml
 paths:
-  # dataset_dir already points at the shared copy on EOS, so it is not repeated here
   eos_data_dir: /eos/user/<l>/<username>/collide2v_data
-  tmp_data_dir: /afs/cern.ch/work/<l>/<username>/collide2v/tmp
+  log_dir: /eos/user/<l>/<username>/collide2v_data/logs
+  tmp_data_dir: /tmp/<username>/collide2v_tmp
 ```
 
-Batch jobs ignore `tmp_data_dir` and write their scratch to the node's own `$TMPDIR`, which is local disk and much faster; the value above is what a run on the login node uses.
-
-**On your own machine**, both are ordinary directories, and `dataset_dir` is where you put the files downloaded from Hugging Face:
+**Off lxplus**, there is no EOS: download a few files from Hugging Face first (section 3), and point `dataset_dir` and the event counts at them:
 
 ```yaml
 # @package _global_
+# configs/local/default.yaml
 paths:
   dataset_dir: /home/you/data/collide
   eos_data_dir: /home/you/data/collide2v
+  log_dir: /home/you/data/collide2v/logs
   tmp_data_dir: /home/you/data/collide2v/tmp
-
 data:
-  num_workers: 4          # a sane value for a laptop
+  event_counts_json: /home/you/data/collide/file_event_counts.json
 ```
 
-For a one-off, the three also read the environment, as `COLLIDE_DATASET_DIR`, `COLLIDE_DATA_DIR` and `COLLIDE_TMP_DIR`, but a file you can read back later is the better record of what a run used.
+Without this file the dataset is written to `data/` inside the repository, which is enough for a test with a few files and nothing more. If the dataset will not fit where it is going, vectorisation stops before writing and says how much space it needs.
 
-### Two things that are easy to miss
+These paths, and every other, are resolved from the top of the repository, which the entry points find by looking for the `.project-root` file: clone the repository whole and do not delete it. A script of your own that imports from `src/` needs the same two lines at the top:
 
-**The project root.** Hydra resolves paths against the `PROJECT_ROOT` environment variable. The entry points set it themselves: each calls `rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)`, which walks up until it finds the `.project-root` file at the top of the repository. That is why the repository must be cloned whole, and why `.project-root` must not be deleted. If you write your own script that imports from `src/`, start it with the same two lines.
+```python
+import rootutils
+rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
+```
 
-**The event-count file.** `src/utils/nEvents_scan/file_event_counts.json` records how many events each Parquet file contains, so that building a manifest does not have to open every file. It is only used for that: how many events a dataset actually holds is read from the shards. If you use a process it does not list, or the dataset is updated, regenerate it and point `data.event_counts_json` at the new file; the script is `src/utils/nEvents_scan/scan_parquet_nevent.py`. Reading only the Parquet metadata, the scan is far quicker than reading the files. That script imports `tqdm`, which is not in `requirements.txt`, so install it first.
 
 ## 3. The dataset
 
-> **Work in progress.** COLLIDE-2V is still being produced and revised. The numbers, file lists and column names below were measured on the version available at the time of writing, and later releases may change them. Treat this section as a description of what you will find today, not as a specification. Re-run the checks described here whenever a new version is published.
+> **Work in progress.** COLLIDE-2V is still being produced and revised. The numbers, file lists and column names below were measured on the version available at the time of writing (Oct 26), and later releases may change them. Treat this section as a description of what you will find today, not as a specification. Re-run the checks described here whenever a new version is published.
 
 ### How the data is organised
 
@@ -209,64 +222,59 @@ Column names have three parts, `<level>_<object>_<variable>`, and the level matt
 /eos/project/f/foundational-model-dataset/samples/production_final
 ```
 
-53 process folders, from single Higgs to top quarks to QCD multijets, several hundred million events in total. This is the complete dataset and the one all published results so far were produced with. It is readable from lxplus and from batch nodes, and it is far too large to copy.
+53 process folders, from single Higgs to top quarks to QCD multijets, several hundred million events in total. It is readable from lxplus and from batch nodes, and it is far too large to copy.
 
 The mapping from the process names used in the configs to these folder names is in `configs/data/collide2v_basic.yaml`, under `process_to_folder`.
 
 ### The copy on Hugging Face
 
-[`fastmachinelearning/collide-1m`](https://huggingface.co/datasets/fastmachinelearning/collide-1m), published under MIT, DOI [10.57967/hf/8447](https://doi.org/10.57967/hf/8447). 740 Parquet files over 50 processes, about 953 GB in total, with individual files of 1.2 to 1.6 GB.
+[`fastmachinelearning/collide-1m`](https://huggingface.co/datasets/fastmachinelearning/collide-1m), published under MIT, DOI [10.57967/hf/8447](https://doi.org/10.57967/hf/8447): 740 Parquet files over 50 processes, about 953 GB in total, 1.2 to 1.6 GB per file. It is laid out as one directory per process, with the same names as the folders on EOS.
 
-This is the copy to use if you do not have the access to CERN account. Do not clone the repository: download the few files you need.
+This is the copy to use off lxplus, without a CERN account. Do not clone it: download the few files you need with `scripts/download_collide_subset.py`, in three steps.
 
-The repository is laid out as one directory per process, with the same names as the folders on EOS. A script does the downloading:
+**1. See what is there.** This asks Hugging Face for the list of files and downloads nothing:
 
 ```bash
-# what is there, and how many files each process has
 python scripts/download_collide_subset.py --list
-
-# three files of QCD, about 4 GB, into data/collide
-python scripts/download_collide_subset.py --out data/collide \
-    --processes QCD_HT50toInf --files-per-process 3
 ```
 
-Check the counts before asking for more: processes have between 2 and 100 files, of 1.2 to 1.6 GB each. Three per class is a sensible start — the splits take whole files, so a class with two files cannot fill train, val and test.
-
-The script then writes `data/collide/file_event_counts.json`, by scanning what it downloaded. That file is needed: planning the splits reads event counts, and the snapshot shipped with the repository describes the files on EOS, not these. Pass both paths:
+**2. Download a few files per process.** For the two classes of `fm_testing_binary`, the experiment section 4 starts from, three files each, about 8 GB:
 
 ```bash
-python src/prepare_data.py experiment=fm_testing_18class_highlevel \
-    paths.dataset_dir=data/collide \
-    data.event_counts_json=data/collide/file_event_counts.json \
-    data.label=hf_subset \
-    'data.to_classify=[QCD_inclusive]' \
-    'data.train_val_test_split_per_class=[8000, 8000, 8000]'
+python scripts/download_collide_subset.py --out /home/you/data/collide \
+    --processes QCD_HT50toInf ggHbb --files-per-process 3
 ```
 
-Keep the default feature set, `collide2v_common`: `collide2v_extended_eos` asks for columns this copy does not have, and vectorisation stops before starting and names them.
+| Option | What it chooses | Default |
+| --- | --- | --- |
+| `--processes` | which processes, by the names `--list` prints | `QCD_HT50toInf HH_4b` |
+| `--files-per-process` | how many files of each, the first ones alphabetically, so the same every time | `2` |
+| `--out` | where they go | `data/collide` |
+
+Before it starts, the script prints how many files it takes and roughly how many GB that is. Take at least three per process: the splits are made of whole files, so with two a class cannot fill train, val and test.
+
+After downloading, the script scans the files and writes `file_event_counts.json` next to them, the number of events in each. The pipeline uses it to decide which file goes to which split without opening them all, and the copy shipped with the repository describes the files on EOS, not these.
+
+**3. Tell the pipeline where they are**, with `dataset_dir` and `event_counts_json` in `configs/local/default.yaml`, as in the off-lxplus example of section 2. Three files per class hold about 25k events, fewer than `fm_testing_binary` asks for, so when you build the dataset in section 4, ask for less:
+
+```bash
+python src/prepare_data.py experiment=fm_testing_binary \
+    data.label=hf_binary 'data.train_val_test_split_per_class=[8000, 8000, 8000]'
+```
 
 ### EOS and Hugging Face are not the same data
 
 They share file names and process names, which makes it tempting to treat them as interchangeable. They are not, in two separate ways.
 
-**Different events.** The same file name holds different collisions. `QCD_HT50toInf-NEVENT10000-RS26000001.parquet` has 8,221 events on Hugging Face and 8,243 on EOS; `HH_4b-NEVENT10000-RS20000001.parquet` has 9,992 against 9,993, and of the columns those two versions share, not one holds identical values. A number obtained on EOS cannot be compared with a number obtained on Hugging Face. Say which copy you used, in your notes and in anything you publish.
+**Different events.** The same file name may hold different collisions.
 
-**Different columns.** 173 columns on Hugging Face against 271 on EOS, and the difference is not a subset relation:
+**Different columns.** 173 columns on Hugging Face against 271 on EOS.
 
 | Only on Hugging Face | Only on EOS |
 | --- | --- |
 | `GenJetAK4`, `GenJetAK8`, `GenPart`, `PFCand`, `PrimaryVertex` | `Event_*`, `Gen_*`, `PFPart`, `Vertex`, `Rho`, `ScalarHT` |
 
-Of the 29 input variables used in the published study, ten exist only on EOS. The list was checked against a downloaded file, not taken from the documentation:
-
-```
-JetPuppiAK4_NCharged, JetPuppiAK4_NNeutrals
-Electron_Charge, Electron_D0, Electron_DZ
-MuonTight_Charge, MuonTight_D0, MuonTight_DZ
-PhotonTight_EhadOverEem, PhotonTight_IsolationVarRhoCorr
-```
-
-The consequence for this repository: **the default feature set is the 19 variables both copies have**, `configs/data/collide2v_common.yaml`, so the same experiment definition runs on either. `collide2v_extended_eos.yaml` adds the other ten and only works on EOS. Vectorisation reads the schema of one file per class before it starts, so asking for a column the data does not have fails immediately, naming it, instead of inside a batch job.
+In this repository **the default feature set is the 19 variables both copies have**, `configs/data/collide2v_common.yaml`, so the same experiment definition runs on either. `collide2v_extended_eos.yaml` adds the other ten and only works on EOS. Vectorisation reads the schema of one file per class before it starts, so asking for a column the data does not have fails immediately, naming it, instead of inside a batch job.
 
 **What is the same.** Both copies store these columns as Arrow `large_list<halffloat>`, so the reading code is identical; only the name of the inner list field differs, `item` against `element`, which awkward absorbs. If you build Parquet files of your own, note that a plain `list` and nullable columns also work, but neither is what either copy of COLLIDE-2V uses.
 
@@ -285,87 +293,76 @@ print([c for c in pf.schema_arrow.names if "MuonTight" in c])
 
 `scripts/parquet_plotter.py` plots distributions straight from the Parquet files, and `scripts/plot_features.py` does the same for the `.npy` files produced later. Use them to check that what came out of the pipeline still looks like what went in.
 
-## 4. Vectorisation and preprocessing
 
-Both stages are driven by `configs/vectorize_preprocess.yaml`, which pulls in a `data`, a `preprocess` and an `experiment` config. Read section 4.6 before launching anything large.
+## 4. Building a dataset
 
-The convention is to leave the base configs alone and put everything specific to your study in one file under `configs/experiment/`, selected with `experiment=<name>`. That file is then the whole description of what you ran.
+A dataset is built in two stages, from the Parquet files in `dataset_dir`:
 
-### 4.1 Choosing the features
+1. **Vectorisation** turns every event into a fixed-length row of numbers: the variables you choose, for a fixed number of objects of each type, padded with zeros.
+2. **Preprocessing** rescales those rows so that every feature sits on a scale of order 1, which is what training reads.
 
-Two feature sets come with the repository, and an experiment picks one with `override /data:` in its defaults list:
 
-| Data config | Columns | Where it runs |
-| --- | --- | --- |
-| `collide2v_common` | 20 | EOS and Hugging Face. The default. |
-| `collide2v_extended_eos` | 29 | EOS only. The feature set of the published study: it adds the neutral multiplicity of jets, and the charge, D0 and DZ of electrons and muons, and the hadronic fraction and isolation of photons. |
+### 4.1 Configuring a dataset
 
-`fm_testing_18class_highlevel` uses the first, `fm_testing_18class_highlevel_eos` the second, and they write to different `label`s so both datasets can exist side by side.
+Each study is one file in `configs/experiment/`, chosen with `experiment=<name>`. Copy `fm_testing_binary.yaml`, the smallest one, under a new name and edit it: it is then the whole record of what you built. Leave the other configs alone; each explains its own keys in comments.
 
-Either way, `datasets_config` is what lists the columns, grouped by object type:
-
-```yaml
-jets:
-  cols: [FullReco_JetPuppiAK4_PT, FullReco_JetPuppiAK4_Eta, FullReco_JetPuppiAK4_Phi]
-  topk: 12      # keep the 12 highest-pT jets, sorted by the first column
-  count: true   # add one feature with the number of jets in the event
-```
-
-- `topk: k` gives the group *k* slots. An event with fewer objects gets zeros; one with more keeps the *k* highest by the first column and **the rest are dropped**. Check that this does not cut into the signal you care about.
-- `topk: null` is for scalars, like MET, where there is nothing to sort.
-- `count: true` adds the true multiplicity before truncation. Without it, the model cannot tell 8 objects from 20.
-
-The rest of the configuration:
-
-| Key | Meaning |
+| File | What it decides |
 | --- | --- |
-| `to_classify` | Processes to use, as names from `process_to_folder`. Their order defines the integer labels. |
-| `train_val_test_split_per_class` | Target events per class, `[train, val, test]`. |
-| `label` | Name of the output directory. **Change it whenever you change anything above**, or new data lands in the same folder as the old and the two are silently mixed. |
-| `paths` | Where the Parquet files are read from and where the `.npy` shards go. |
+| `configs/experiment/<name>.yaml` | your study: which classes, how many events, the `label` of the output directory, and which feature set |
+| `configs/data/collide2v_common.yaml` | the default feature set: 19 variables that both copies of the dataset have |
+| `configs/data/collide2v_extended_eos.yaml` | the published study's 29 variables, on lxplus only |
+| `configs/data/collide2v_basic.yaml` | what both feature sets share: the seed, the names of the classes (`process_to_folder`), the event-count file |
+| `configs/preprocess/collide2v.yaml` | how each kind of variable is rescaled |
+
+Two things to get right in your experiment file, both commented there: give a new `label` whenever you change the event counts or the feature set, and keep `preprocess.enabled: true`.
 
 ### 4.2 Running it
 
-**Producing a dataset is its own command**, and training does not do it: a run that finds its data missing stops and tells you this. Vectorising the full dataset takes days, and a training job that started doing it would spend its GPU allocation on that.
+Training never builds a dataset: when the one it needs is missing it stops and points here. Rerunning any of the commands below is safe: what is already built is skipped.
 
-For a dataset small enough to build on one machine — a few files per class, which is the normal case off lxplus:
+**On lxplus, a dataset of a few files per class**, on the login node, inside the container (`crun`, section 2):
 
 ```bash
-python src/prepare_data.py experiment=fm_testing_binary   # two classes, 50k events each
-python src/prepare_data.py experiment=<name> data.label=my_small_test   # a separate one
+crun python src/prepare_data.py experiment=fm_testing_binary
 ```
 
-`fm_testing_binary` is the smallest experiment that does something: QCD against ggH→bb, on the common feature set. It takes minutes, and it is the one to start from.
+`fm_testing_binary`, QCD against ggH→bb with 50k training events each, takes minutes and is the one to start from.
 
-For the full dataset, send the work to HTCondor. The second stage needs the first to be finished:
+**On lxplus, a large dataset**, on HTCondor. The submit scripts run on lxplus itself, **outside the container**, because `condor_submit` does not exist inside it. `scripts/submit_env.sh` gives them the Python libraries they need, from CVMFS, and creates a 15 MB environment in `~/.venvs/` the first time. The jobs themselves run in the container.
 
 ```bash
-# from the project directory on AFS, with the container available
+source scripts/submit_env.sh                                     # once per terminal
 python scripts/submit_vectorization_jobs.py experiment=<name>    # ≤50 files per job
-condor_q                                                        # wait until empty
-python scripts/submit_preprocessing_jobs.py experiment=<name>    # fits the stats, then submits
+condor_q                                                         # wait until empty
+python scripts/submit_preprocessing_jobs.py experiment=<name>    # fits the statistics, then submits
 ```
 
-Pass the same `experiment=` to both, and to the training that follows: it reaches the jobs, so they build the dataset you asked for rather than the one the config happens to default to.
+Preprocessing needs every vectorisation job to be finished. Put every setting in the experiment file: the jobs receive `experiment=` and nothing else, so an override such as `data.label=...` on the command line would not reach them. `FM_TESTING_IMAGE` does reach them, so the image can stay on EOS. Logs, submit files and per-job manifests land in `logs/condor_logs/`.
 
-Logs and per-job manifests land in `logs/condor_logs/`. Both scripts are idempotent: files already produced are skipped, so rerunning them submits only what is missing. Both routes read and write the same `split_manifest.json`, so a local run and the batch system cannot disagree about which files the dataset contains.
+**Off lxplus, with files from Hugging Face** (section 3), the same command as the first, without the container, and with fewer events, since three files per class hold about 25k:
+
+```bash
+python src/prepare_data.py experiment=fm_testing_binary \
+    data.label=hf_binary 'data.train_val_test_split_per_class=[8000, 8000, 8000]'
+```
 
 ### 4.3 What lands on disk
+
+Everything goes under `<eos_data_dir>/<label>/`. Shards are written to scratch space first (`tmp_data_dir`, or the node's own disk in a batch job) and moved there once complete:
 
 ```
 <eos_data_dir>/<label>/
 ├── vectorized/
 │   ├── feature_map.json        # which column sits at which position
-│   ├── split_manifest.json     # which Parquet file went to which split, plus
-│   │                            # the seed and strategy that chose them
+│   ├── split_manifest.json     # which Parquet file went to which split (section 5)
 │   └── train|val|test/<process>/<file>_x.npy, _y.npy
-└── preprocessed/
-    ├── feature_map.json        # after transforms, so wider than the raw one
-    ├── norm_stats.json         # the statistics used, needed to reapply the scaling
+└── preprocessed/               # what training reads
+    ├── feature_map.json        # wider than the raw one: trig and onehot add columns
+    ├── norm_stats.json         # the fitted statistics
     └── train|val|test/<process>/<file>_x.npy, _y.npy
 ```
 
-`_x.npy` holds `(events, features)` float32, `_y.npy` the integer label of the class. `feature_map.json` is the only way to know what a column means, so read it rather than counting by hand:
+Each Parquet file gives one pair of shards: `_x.npy` holds the events, `(events, features)` in float32, and `_y.npy` their class as an integer. Use `feature_map.json` to find a column rather than counting by hand:
 
 ```python
 import json, numpy as np
@@ -374,72 +371,29 @@ X = np.load("<file>_x.npy", mmap_mode="r")
 jets = X[:, fm["jets"]["start"]:fm["jets"]["end"]]     # all jet features
 ```
 
-### 4.4 Preprocessing
-
-Each group of features gets a transform and, independently, a normaliser. Both are set per group in `configs/preprocess/collide2v.yaml`.
-
-| Transform | Applied by default to |
-| --- | --- |
-| `log1p` | pT, mass, MET — long tails compressed, sign preserved |
-| `trig` | φ, replaced by its sine and cosine, so that 0 and 2π are the same point |
-| `onehot` | PID, charge, b-tag — categories, not numbers |
-| `identity` | everything else |
-
-| Normaliser | Applied by default to |
-| --- | --- |
-| `robust` | most continuous features: median 0, scaled by the interquartile range, so outliers do not set the scale |
-| `minmax` | object counts and the PUPPI b-tag, into [0, 1] |
-| `none` | φ and the one-hot groups, which are already on a fixed scale |
-| `standard` | nothing by default: mean 0, std 1, available if you want it |
-
-`trig` and `onehot` change the number of columns, which is why the preprocessed feature map is wider than the raw one.
-
-`mode` controls what a run does: `fit_only` computes the statistics, `apply_only` reuses existing ones, `fit_and_apply` does both. The fit reads training files only — `fit_num_files_per_class` of them per class, the first ones alphabetically, which it prints — and the statistics are then applied to all three splits, so val and test never influence the scale.
-
-Rerunning is safe. The pipeline compares the two trees shard by shard: when some vectorised shards have no preprocessed counterpart, as after a batch job that died part way through, it says which ones and applies the **stored** statistics to those alone. It never refits, because refitting on a different set of files would put the new shards on a different scale from the old.
-
-### 4.5 Checking the output
+To check the result, plot the shards next to the Parquet they came from:
 
 ```bash
-# distributions from the .npy shards, raw or preprocessed
-python scripts/plot_features.py --base_dir <label>/preprocessed --output_dir plots/ \
-    --split train --max_files 5
-
-# the same variables in the source Parquet
+python scripts/plot_features.py --base_dir <eos_data_dir>/<label>/preprocessed --output_dir plots/ --split train --max_files 5
 python scripts/parquet_plotter.py --input_dir <dataset_dir> --output_dir plots/parquet
 ```
 
-Compare the two. After preprocessing a feature should sit around 0 with a spread of order 1; a column of exact zeros means a `topk` slot never filled, and a lone huge outlier usually means statistics fitted on too few files.
+After preprocessing a feature should sit around 0 with a spread of order 1. A column of exact zeros is a `topk` slot that never filled; a lone huge outlier usually means statistics fitted on too few files.
 
-### 4.6 What is checked before anything is written
+### 4.4 What stops a run, and why
 
-A vectorisation of the full dataset runs for hours on hundreds of batch jobs, so the
-failures worth having are the early ones. Before writing a shard, the pipeline checks:
+The pipeline checks before writing anything, because a large dataset runs for hours:
 
 | Check | Stops when |
 | --- | --- |
-| Columns | a column the config asks for is not in the data — usually the EOS-only variables on a Hugging Face download. Only the first file of each class is opened. |
-| Feature map | the dataset on disk was built with different columns, and the `label` was kept. |
-| Manifest | the seed, the strategy or the split sizes differ from the ones the dataset was built with, or there are shards it does not list. Section 5 explains why. |
-| Space | the estimated size — vectorised plus preprocessed — exceeds what is left where it is going. On AFS it asks the quota with `fs listquota`, because the filesystem itself reports the whole partition: 2.2 TB free on a home directory that had 3.9 GB left. |
+| Columns | a variable is not in the data, usually an EOS-only one on a Hugging Face download. |
+| Feature map | the `label` already holds a dataset built with other variables. |
+| Manifest | the seed or the split sizes differ from those the `label` was built with (section 5). |
+| Space | the dataset will not fit where it is going. On AFS it reads the quota, since the filesystem reports the whole partition. |
 
-And while writing:
+A Parquet file that cannot be read stops the run once every other file is done, and names it; rerunning redoes only that one. `data.skip_unreadable_files=true` goes on without it.
 
-- **A Parquet file that cannot be read** stops the run, but only once every other file is
-  done, so one bad file does not throw away a batch job's work. The error names the
-  files, rerunning redoes only those, and a batch job ends with a failed status rather
-  than reporting success. For a file you know is broken, `data.skip_unreadable_files=true`
-  goes on without it; the event check before training still says which split came out
-  short.
 
-And on the way back in:
-
-- **Counting the events of a dataset** — before training, and to plan the loader — reads
-  each shard's size from its header, which on EOS costs 74 ms a file. The counts are
-  therefore cached in a `.shard_rows.json` in each directory, keyed by size and
-  modification time, so only a new or changed shard is opened again. Measured on 101
-  shards on EOS: 4.7 s the first time, 0.02 s after. The cache is not written where the
-  directory is read-only, such as someone else's dataset.
 
 ## 5. Which files a dataset is made of
 
@@ -462,6 +416,9 @@ Files are assigned whole, and a split stops as soon as it holds the events asked
 - **An existing manifest is never rewritten.** It is reused as it is, and only *extended*, with classes it does not yet cover.
 - **A run that does not match it stops.** Change the seed, the strategy or the split sizes of a dataset that already exists and the run refuses, naming both values, and tells you to use a new `data.label`. The shards on disk were chosen by the stored settings; mixing in files drawn differently would leave one directory holding two samples.
 - **Shards the manifest does not list stop the run too.** For a dataset built before the manifest recorded its metadata this is a warning instead, since those predate the rule.
+
+To plan the splits without opening every Parquet file, the manifest reads how many events each file holds from `src/utils/nEvents_scan/file_event_counts.json`, a snapshot of the copy on EOS. It is used for nothing else: how many events a dataset actually contains is read from its shards. For files the snapshot does not list (a Hugging Face download, or an updated dataset) regenerate it with `src/utils/nEvents_scan/scan_parquet_nevent.py` and point `data.event_counts_json` at the new file. The download script in section 3 does this for you.
+
 - **The columns are fixed as well.** The manifest says which files a dataset holds, not which features were taken from them, so `feature_map.json` is compared too: change `datasets_config` and keep the `label`, and the run stops rather than adding shards of a different width — or, worse, the same width with different columns in them.
 
 ### 5.2 Seeds
