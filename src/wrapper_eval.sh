@@ -1,57 +1,52 @@
 #!/bin/bash
 # =====================================================
-#  HTCondor wrapper for foundation_model_testing pipeline
+#  HTCondor wrapper for evaluating one checkpoint, see src/eval.sub
 # =====================================================
+#
+# Usage: wrapper_eval.sh <checkpoint> [hydra overrides...]
+#
+# Nothing here runs Python outside the container: the batch nodes have no hydra.
 
 set -euo pipefail
 
-echo "[`date`] Starting Condor job on $(hostname)"
+CKPT="${1:?usage: wrapper_eval.sh <checkpoint> [hydra overrides...]}"
+shift
+
+echo "[`date`] Starting evaluation job on $(hostname)"
 echo "[`date`] Running as $(whoami)"
-echo "Working directory: $(pwd)"
+echo "Checkpoint: ${CKPT}, overrides: $*"
 
 # --- Paths ---
-# The project is wherever this script is, unless told otherwise; the image is about
-# 9 GB and often lives outside the repository, hence FM_TESTING_IMAGE.
+# The submit file passes PROJECT_DIR, since HTCondor runs a copy of this script in
+# the node's scratch directory; run by hand, it is wherever this script is. The
+# image is about 7 GB and often lives outside the repository, hence FM_TESTING_IMAGE.
 PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 IMAGE="${FM_TESTING_IMAGE:-${PROJECT_DIR}/fm_testing.sif}"
 
-SEED="${HYDRA_SEED:-24}"
+if [ ! -f "${PROJECT_DIR}/src/eval.py" ]; then
+    echo "[wrapper] no src/eval.py in ${PROJECT_DIR}: submit from the repository root" >&2
+    exit 1
+fi
+cd "${PROJECT_DIR}"
 
-# --- Go to project directory ---
-cd ${PROJECT_DIR}
-
-# --- Sanity check: Python version ---
-apptainer exec ${IMAGE} python -V || true
-
-## Determine accelerator from full Hydra composition
-ACCELERATOR=$(python - << 'EOF'
-from hydra import initialize, compose
-
-with initialize(version_base="1.3", config_path="configs"):
-    cfg = compose(config_name="eval.yaml")
-
-print(cfg.trainer.get("accelerator", "cpu"))
-EOF
-)
-
-# Pick Apptainer flags
-APPTAINER_FLAGS="--bind /afs:/afs --bind /eos:/eos --writable-tmpfs --env CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES --env NVIDIA_VISIBLE_DEVICES=all"
-
-if [ "$ACCELERATOR" = "gpu" ]; then
-    echo "[wrapper] GPU requested → enabling --nv"
-    APPTAINER_FLAGS="--nv $APPTAINER_FLAGS"
+# --- GPU ---
+# Decided by what the node has, which is what the submit file asked for.
+NV_FLAG=""
+if command -v nvidia-smi > /dev/null 2>&1 && nvidia-smi -L > /dev/null 2>&1; then
+    echo "[wrapper] GPU found → running with --nv"
+    NV_FLAG="--nv"
 else
-    echo "[wrapper] CPU mode → running without --nv"
+    echo "[wrapper] no GPU on this node → running without --nv"
 fi
 
-# --- Run evaluation inside container ---
-echo "[wrapper] Running evaluation with flags: $APPTAINER_FLAGS"
-
-apptainer exec $APPTAINER_FLAGS "${IMAGE}" bash -lc "
-  python src/eval.py
-"
-
-EXIT_CODE=$?
+# `|| EXIT_CODE=$?`: under set -e a failure would end the script here, before the
+# line below says how the job ended.
+EXIT_CODE=0
+apptainer exec ${NV_FLAG} \
+    --bind /afs:/afs \
+    --bind /eos:/eos \
+    --writable-tmpfs \
+    "${IMAGE}" python src/eval.py ckpt_path="${CKPT}" "$@" || EXIT_CODE=$?
 
 echo "[`date`] Job finished with exit code ${EXIT_CODE}"
 exit ${EXIT_CODE}

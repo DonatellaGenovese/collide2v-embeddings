@@ -1,3 +1,4 @@
+import os
 from typing import List
 
 import hydra
@@ -53,6 +54,13 @@ def instantiate_loggers(logger_cfg: DictConfig) -> List[Logger]:
 
     for _, lg_conf in logger_cfg.items():
         if isinstance(lg_conf, DictConfig) and "_target_" in lg_conf:
+            if lg_conf._target_.endswith("MLFlowLogger"):
+                # Runs are stored as plain files under paths.log_dir, which works on EOS
+                # and AFS alike. MLflow 3 calls that backend deprecated and, from 3.17,
+                # refuses it unless asked; its suggested replacement, SQLite, needs file
+                # locks that network filesystems do not reliably give. setdefault, so an
+                # explicit choice in the environment still wins.
+                os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
             log.info(f"Instantiating logger <{lg_conf._target_}>")
             logger.append(hydra.utils.instantiate(lg_conf))
 

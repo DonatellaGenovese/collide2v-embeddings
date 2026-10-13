@@ -15,6 +15,10 @@ defaults:
   # the saved config.yaml Hydra config from the exact training run that produced the checkpoint given below
   - experiment: fm_testing_18class_highlevel
 
+  # your paths, as in train.yaml; without it an evaluation wrote its run directory
+  # under logs/ in the repository, whatever configs/local/default.yaml said
+  - optional local: default
+
   - _self_
 
 task_name: "eval"

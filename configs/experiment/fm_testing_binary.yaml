@@ -4,7 +4,7 @@
 # both copies of the dataset have. Good for a first run, on a laptop or on lxplus:
 #
 #   python src/prepare_data.py experiment=fm_testing_binary
-#   python src/train.py experiment=fm_testing_binary trainer=cpu
+#   python src/train.py experiment=fm_testing_binary
 #
 # 50k training events per class is a few parquet files per class, so preparing it takes
 # minutes rather than days. Raise the counts once it works.

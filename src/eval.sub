@@ -1,14 +1,25 @@
 # ================================
-# Condor submission: full pipeline (Apptainer)
+# Condor submission: evaluate one checkpoint (Apptainer)
 # ================================
+#
+# From the repository root, after `mkdir -p logs/condor_logs`:
+#
+#   condor_submit src/eval.sub CKPT=<log_dir>/train/runs/<date>/checkpoints/<file>.ckpt
+#
+# The configuration is taken from the training run the checkpoint belongs to (its
+# .hydra/config.yaml), so the model and the data match it; no experiment is needed.
+
+if ! defined CKPT
+  error : Say which checkpoint to evaluate: condor_submit src/eval.sub CKPT=<path>
+endif
 
 executable = src/wrapper_eval.sh
-arguments  = $(ClusterId)
+arguments  = "$(CKPT) $(ARGS:)"
 
 # --- Logs ---
-output = logs/condor_logs/job_$(ClusterId).out
-error  = logs/condor_logs/job_$(ClusterId).err
-log    = logs/condor_logs/job_$(ClusterId).log
+output = logs/condor_logs/eval_$(ClusterId).out
+error  = logs/condor_logs/eval_$(ClusterId).err
+log    = logs/condor_logs/eval_$(ClusterId).log
 
 # --- Run job as your CERN user (needed for EOS writes) ---
 run_as_owner = True
@@ -25,6 +36,9 @@ request_gpus = 1
 
 # FM_TESTING_IMAGE is copied from the shell you submit from, where it says where the
 # .sif is; unset, it arrives empty and the wrapper looks inside the repository.
-environment = "OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 FM_TESTING_IMAGE=$ENV(FM_TESTING_IMAGE:)"
+# PROJECT_DIR is where you submit from, which has to be the repository root: the
+# wrapper runs as a copy in the node's scratch directory, so it cannot find the
+# repository from its own location.
+environment = "OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 FM_TESTING_IMAGE=$ENV(FM_TESTING_IMAGE:) PROJECT_DIR=$ENV(PWD)"
 
 queue

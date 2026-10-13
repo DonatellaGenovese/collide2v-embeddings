@@ -1,17 +1,26 @@
 # ================================
-# Condor submission: full pipeline (Apptainer)
+# Condor submission: one training run (Apptainer)
 # ================================
+#
+# From the repository root, after `mkdir -p logs/condor_logs`:
+#
+#   condor_submit src/train_full_pipeline.sub EXPERIMENT=fm_testing_binary
+#   condor_submit src/train_full_pipeline.sub EXPERIMENT=<name> ARGS="model=supcon trainer.max_epochs=50"
+#
+# EXPERIMENT is the config in configs/experiment/, and ARGS any further Hydra overrides,
+# separated by spaces. A sweep is ARGS="-m hparams_search=<name>".
+
+if ! defined EXPERIMENT
+  error : Say which experiment to train: condor_submit src/train_full_pipeline.sub EXPERIMENT=<name>
+endif
 
 executable = src/wrapper_full_pipeline.sh
-arguments  = $(ClusterId)
-
-# Choose sweep seed (change once per submission for optuna sweeps)
-SEED = 15
+arguments  = "$(EXPERIMENT) $(ARGS:)"
 
 # --- Logs ---
-output = logs/condor_logs/job_$(ClusterId).out
-error  = logs/condor_logs/job_$(ClusterId).err
-log    = logs/condor_logs/job_$(ClusterId).log
+output = logs/condor_logs/train_$(ClusterId).out
+error  = logs/condor_logs/train_$(ClusterId).err
+log    = logs/condor_logs/train_$(ClusterId).log
 
 # --- Run job as your CERN user (needed for EOS writes) ---
 run_as_owner = True
@@ -26,11 +35,14 @@ getenv = False
 request_cpus = 6
 request_gpus = 1
 
-# Require at least 40 GB GPU memory
-Requirements = (TARGET.GPUs_GlobalMemoryMb >= 40000)
+# At least 40 GB of GPU memory.
+requirements = (TARGET.GPUs_GlobalMemoryMb >= 40000)
 
 # FM_TESTING_IMAGE is copied from the shell you submit from, where it says where the
 # .sif is; unset, it arrives empty and the wrapper looks inside the repository.
-environment = "OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 HYDRA_SEED=$(SEED) FM_TESTING_IMAGE=$ENV(FM_TESTING_IMAGE:)"
+# PROJECT_DIR is where you submit from, which has to be the repository root: the
+# wrapper runs as a copy in the node's scratch directory, so it cannot find the
+# repository from its own location.
+environment = "OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 FM_TESTING_IMAGE=$ENV(FM_TESTING_IMAGE:) PROJECT_DIR=$ENV(PWD)"
 
 queue

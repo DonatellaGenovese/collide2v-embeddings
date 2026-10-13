@@ -178,3 +178,6 @@ notebooks/top_models/top1.ckpt
 notebooks/top_models/top2_preds.npz
 notebooks/top_models/top2_roc.png
 notebooks/top_models/top2.ckpt
+
+# Kerberos credential caches HTCondor copies next to the submit file (<user>.cc)
+/*.cc
