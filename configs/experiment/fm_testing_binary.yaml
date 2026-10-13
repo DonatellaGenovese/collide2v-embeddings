@@ -8,8 +8,14 @@
 #
 # 50k training events per class is a few parquet files per class, so preparing it takes
 # minutes rather than days. Raise the counts once it works.
+#
+# To make your own experiment, copy this file under a new name and change the `data:`
+# block. The file is then the whole record of the dataset you built and the training you
+# ran, so put every setting here rather than on the command line.
 
 defaults:
+  # The feature set: collide2v_common (19 variables, on EOS and Hugging Face) or
+  # collide2v_extended_eos (29, EOS only). Both are in configs/data/.
   - override /data: collide2v_common
   - override /callbacks: default
   - override /trainer: gpu
@@ -17,8 +23,16 @@ defaults:
 tags: ["collide2v", "tinyTransformer", "binary"]
 
 data:
+  # Events per class, [train, val, test]. Files are taken whole, so the shards hold a
+  # little more than this; training reads exactly this many.
   train_val_test_split_per_class: [50_000, 10_000, 10_000]
+  # The directory the dataset is written to, under paths.eos_data_dir. Give a new one
+  # whenever you change the event counts or the feature set: the pipeline refuses to add
+  # differently built data to an existing label. Adding a class is the exception: the
+  # dataset is extended with it, and the other classes are left as they are.
   label: "v3_binary_qcd_gghbb"
+  # The classes, by the names in process_to_folder in configs/data/collide2v_basic.yaml.
+  # Their order sets the integer labels: the first is 0.
   to_classify:
     - "QCD_inclusive"
     - "ggHbb"
@@ -34,6 +48,8 @@ callbacks:
     patience: 5
 
 preprocess:
+  # false in configs/preprocess/collide2v.yaml, so every experiment sets it: without
+  # it only vectorisation runs, and training, which reads the preprocessed shards, stops.
   enabled: true
 
 logger:

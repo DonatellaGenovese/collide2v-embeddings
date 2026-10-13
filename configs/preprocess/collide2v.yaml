@@ -1,8 +1,29 @@
+# How the vectorised shards are rescaled before training reads them.
+#
+# Every column is put in a kind by the end of its name (_PT is pt, _Phi is phi, and so
+# on; the full list is PATTERN_TO_GROUP in src/preprocessing/utils.py, and anything not
+# listed is `other`). Each kind then gets a transform, applied first, and a normaliser.
+
+# Off here, and switched on by each experiment: `preprocess.enabled: true`.
 enabled: false
-mode: fit_and_apply      # or apply_only or fit_only
+# fit_and_apply  fit the statistics, then rescale every split with them
+# fit_only       fit and store them in norm_stats.json, rescale nothing
+# apply_only     rescale with the statistics already stored, without refitting
+mode: fit_and_apply
+# The fit reads this many training files per class, the first ones alphabetically, and
+# never val or test, so those cannot influence the scale. Raise it if the plots of
+# section 4.3 of the README show outliers far from the bulk.
 fit_num_files_per_class: 5
 
-# Preprocessing transformation methods: identity, log1p, trig, onehot
+# Transforms:
+#   log1p     log(1 + |x|) with the sign kept: compresses long tails, for pT, mass, MET
+#   trig      replaces an angle by its sine and cosine, so 0 and 2pi are the same point;
+#             one column becomes two
+#   onehot    one column per category, for things that are labels rather than numbers;
+#             the categories are fixed in src/preprocessing/utils.py
+#   identity  leaves the column as it is
+# Zeros are padding, an empty object slot: log1p, trig and the normalisers below leave
+# them at zero, while onehot encodes 0 as one of its categories.
 feature_transforms:
   pt: log1p
   eta: identity
@@ -24,7 +45,12 @@ feature_transforms:
   nneutrals: identity
   other: identity
 
-# Normalization methods: none, minmax, robust, standard
+# Normalisers, applied after the transform, with statistics from the fit:
+#   robust    subtract the median, divide by the interquartile range: outliers do not
+#             set the scale
+#   standard  subtract the mean, divide by the standard deviation
+#   minmax    map the fitted range onto [0, 1]
+#   none      leave the scale alone: for sine and cosine, already in [-1, 1], and one-hot
 feature_normalizations:
   pt: robust
   eta: robust

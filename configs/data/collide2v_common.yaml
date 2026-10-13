@@ -12,6 +12,16 @@
 defaults:
   - collide2v_basic
 
+# The variables, grouped by object type. For each group:
+#   cols   the Parquet columns to read, one variable each
+#   topk   how many objects to keep: the k with the highest value of the first column
+#          (pT here), in that order. An event with fewer gets zeros in the empty slots;
+#          one with more loses the rest, so check that this does not cut into your signal.
+#          null is for event-level quantities, such as MET, where there is nothing to sort.
+#   count  true adds one column: how many objects the event had before truncation, so a
+#          model can tell 12 jets from 20.
+# A group gives topk x len(cols) columns, plus one if count is true. To use other
+# variables, copy this file under a new name and select it in your experiment.
 datasets_config:
   jets:
     cols:
