@@ -50,6 +50,19 @@ def experiment_override() -> str:
     return ""
 
 
+def job_environment() -> str:
+    """The environment a job gets, since getenv = False gives it nothing else.
+
+    FM_TESTING_IMAGE goes with it when set: the wrapper reads it to find the .sif, and
+    without it falls back to one inside the repository, which an image on EOS is not.
+    """
+    env = "OMP_NUM_THREADS=4 MKL_NUM_THREADS=4"
+    image = os.environ.get("FM_TESTING_IMAGE")
+    if image:
+        env += f" FM_TESTING_IMAGE={os.path.abspath(image)}"
+    return env
+
+
 # -----------------------------------------------------------------------------
 # MAIN
 # -----------------------------------------------------------------------------
@@ -173,7 +186,7 @@ getenv = False
 request_cpus = 4
 # Space-separated inside the quotes: with "; " the value of OMP_NUM_THREADS became
 # "4;", which libgomp rejects, so the job ignored it and used every core.
-environment = "OMP_NUM_THREADS=4 MKL_NUM_THREADS=4"
+environment = "{job_environment()}"
 
 queue
 """

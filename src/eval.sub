@@ -23,6 +23,8 @@ getenv = False
 request_cpus = 6
 request_gpus = 1
 
-environment = "OMP_NUM_THREADS=4 MKL_NUM_THREADS=4"
+# FM_TESTING_IMAGE is copied from the shell you submit from, where it says where the
+# .sif is; unset, it arrives empty and the wrapper looks inside the repository.
+environment = "OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 FM_TESTING_IMAGE=$ENV(FM_TESTING_IMAGE:)"
 
 queue
