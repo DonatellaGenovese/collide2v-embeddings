@@ -13,6 +13,12 @@ EXPERIMENT="${3:-}"
 # elsewhere: set FM_TESTING_IMAGE to say where.
 IMAGE="${FM_TESTING_IMAGE:-${PROJECT_DIR}/fm_testing.sif}"
 
+if [ ! -f "${IMAGE}" ]; then
+    echo "[wrapper] no container image at ${IMAGE}: set FM_TESTING_IMAGE in the shell you" \
+         "submit from, as in section 2 of the README, and submit again" >&2
+    exit 1
+fi
+
 echo "[`date`] Starting vectorization job on $(hostname)"
 echo "[`date`] Running as $(whoami)"
 echo "Manifest path: ${MANIFEST_PATH}"

@@ -58,6 +58,20 @@ def job_environment() -> str:
     return env
 
 
+def require_image() -> None:
+    """Stop before submitting when the jobs would not find the container.
+
+    A job without FM_TESTING_IMAGE looks for fm_testing.sif in the repository, and finds
+    out only on the node, after its wait in the queue.
+    """
+    image = os.environ.get("FM_TESTING_IMAGE") or str(PROJECT_DIR / "fm_testing.sif")
+    if not os.path.isfile(image):
+        raise SystemExit(
+            f"❌ No container image at {image}. Set FM_TESTING_IMAGE in this shell, as in "
+            "section 2 of the README, and run this again."
+        )
+
+
 # -----------------------------------------------------------------------------
 # MAIN
 # -----------------------------------------------------------------------------
@@ -69,6 +83,7 @@ def job_environment() -> str:
 def main(cfg: DictConfig):
 
     print("🟢 Hydra config composed successfully")
+    require_image()
     # -----------------------------------------------------------------------------
     # LOAD CONFIGS
     # -----------------------------------------------------------------------------

@@ -13,7 +13,7 @@ import pytest
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 SUBMITTERS = ("scripts/submit_vectorization_jobs.py", "scripts/submit_preprocessing_jobs.py")
-SUB_FILES = ("src/train_full_pipeline.sub", "src/eval.sub")
+SUB_FILES = ("src/train_full_pipeline.sub", "src/eval.sub", "src/probe.sub")
 
 
 def load(path):
@@ -78,7 +78,9 @@ def run_wrapper(path, args, tmp_path, gpu=False):
     if gpu:
         (bin_dir / "nvidia-smi").write_text("#!/bin/bash\necho 'GPU 0: fake'\n")
         (bin_dir / "nvidia-smi").chmod(0o755)
-    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "FM_TESTING_IMAGE": "/images/fm.sif",
+    image = tmp_path / "fm.sif"
+    image.write_text("")
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "FM_TESTING_IMAGE": str(image),
            "HOME": str(tmp_path)}
     return subprocess.run(["bash", str(REPO / path), *args], env=env, cwd=tmp_path,
                           capture_output=True, text=True)
@@ -104,7 +106,7 @@ def test_training_runs_the_experiment_it_was_given(tmp_path):
                          ["fm_testing_binary", "trainer=cpu", "trainer.max_epochs=1"], tmp_path)
     assert result.returncode == 0, result.stderr
     call = [line for line in result.stdout.splitlines() if line.startswith("APPTAINER")]
-    assert call == ["APPTAINER exec --bind /afs:/afs --bind /eos:/eos --writable-tmpfs /images/fm.sif "
+    assert call == [f"APPTAINER exec --bind /afs:/afs --bind /eos:/eos --writable-tmpfs {tmp_path}/fm.sif "
                     "python src/train.py experiment=fm_testing_binary trainer=cpu trainer.max_epochs=1"]
 
 
@@ -134,7 +136,7 @@ def test_a_submission_without_its_target_is_refused(path, required):
     assert f'arguments  = "$({required}) $(ARGS:)"' in text
 
 
-@pytest.mark.parametrize("path", ("src/train_full_pipeline.sub", "src/eval.sub"))
+@pytest.mark.parametrize("path", SUB_FILES)
 def test_the_job_is_told_where_the_repository_is(path):
     """HTCondor runs a copy of the wrapper in the node's scratch directory, where the
     repository derived from the script's own location is not the repository: the job
@@ -154,3 +156,83 @@ def test_a_wrapper_in_the_wrong_place_fails_instead_of_succeeding(path, tmp_path
                             env={"PATH": "/usr/bin:/bin"}, cwd=copy.parent)
     assert result.returncode != 0
     assert "submit from the repository root" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Linear probes, through the evaluation wrapper
+# ---------------------------------------------------------------------------
+
+
+def test_the_probe_job_runs_the_probe_on_the_experiment_it_names():
+    text = (REPO / "src/probe.sub").read_text()
+    assert "EVAL_SCRIPT=src/eval_probes.py" in text
+    assert 'arguments  = "$(CKPT) experiment=$(EXPERIMENT) $(ARGS:)"' in text
+    assert "if ! defined EXPERIMENT" in text and "if ! defined CKPT" in text
+
+
+def test_the_wrapper_runs_the_probe_when_asked(tmp_path, monkeypatch):
+    import subprocess
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "apptainer").write_text('#!/bin/bash\necho "APPTAINER $*"\n')
+    (bin_dir / "apptainer").chmod(0o755)
+    image = tmp_path / "fm.sif"
+    image.write_text("")
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "FM_TESTING_IMAGE": str(image),
+           "EVAL_SCRIPT": "src/eval_probes.py"}
+    result = subprocess.run(["bash", str(REPO / "src/wrapper_eval.sh"), "/r/last.ckpt",
+                             "experiment=fm_testing_binary"],
+                            env=env, cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert ("python src/eval_probes.py ckpt_path=/r/last.ckpt experiment=fm_testing_binary"
+            in result.stdout)
+
+
+def test_the_wrapper_runs_nothing_else(tmp_path):
+    import subprocess
+
+    env = {"PATH": "/usr/bin:/bin", "EVAL_SCRIPT": "src/train.py"}
+    result = subprocess.run(["bash", str(REPO / "src/wrapper_eval.sh"), "/r/last.ckpt"],
+                            env=env, cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "EVAL_SCRIPT must be" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# A missing image is found before the queue, or at least before the container
+#
+# A probe job submitted from a terminal without FM_TESTING_IMAGE waited for a GPU and
+# then failed in apptainer, on an image path inside the repository.
+# ---------------------------------------------------------------------------
+
+ALL_WRAPPERS = ("src/wrapper_full_pipeline.sh", "src/wrapper_eval.sh",
+                "src/data/wrapper_vectorize.sh", "src/preprocessing/wrapper_preprocess.sh")
+
+
+@pytest.mark.parametrize("path", ALL_WRAPPERS)
+def test_a_wrapper_without_its_image_says_how_to_fix_it(path, tmp_path):
+    import subprocess
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "apptainer").write_text('#!/bin/bash\necho "APPTAINER $*"\n')
+    (bin_dir / "apptainer").chmod(0o755)
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "FM_TESTING_IMAGE": str(tmp_path / "none.sif"),
+           "PROJECT_DIR": str(REPO)}
+    result = subprocess.run(["bash", str(REPO / path), "a", str(REPO), "b"], env=env,
+                            cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "APPTAINER" not in result.stdout
+    assert "set FM_TESTING_IMAGE" in result.stderr
+
+
+@pytest.mark.parametrize("path", SUBMITTERS)
+def test_nothing_is_submitted_without_an_image(path, monkeypatch, tmp_path):
+    module = load(path)
+    monkeypatch.setenv("FM_TESTING_IMAGE", str(tmp_path / "none.sif"))
+    with pytest.raises(SystemExit, match="No container image"):
+        module.require_image()
+    (tmp_path / "fm.sif").write_text("")
+    monkeypatch.setenv("FM_TESTING_IMAGE", str(tmp_path / "fm.sif"))
+    module.require_image()

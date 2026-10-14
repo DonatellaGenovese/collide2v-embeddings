@@ -1,0 +1,48 @@
+# ================================
+# Condor submission: a linear probe on one checkpoint (Apptainer)
+# ================================
+#
+# From the repository root, after `mkdir -p logs/condor_logs`:
+#
+#   condor_submit src/probe.sub EXPERIMENT=fm_testing_binary CKPT=<log_dir>/train/runs/<date>/checkpoints/last.ckpt
+#   condor_submit src/probe.sub EXPERIMENT=<name> CKPT=<path> ARGS="model=simclr"
+#
+# Unlike src/eval.sub, the probe does not read the training run's configuration: the
+# encoder is rebuilt from EXPERIMENT and the model, so both have to be the ones the
+# checkpoint was trained with. ARGS takes the model when it is not the experiment's
+# default, and any other override, such as +probe.save_embeddings=true.
+
+if ! defined EXPERIMENT
+  error : Say which experiment the checkpoint was trained with: condor_submit src/probe.sub EXPERIMENT=<name> CKPT=<path>
+endif
+if ! defined CKPT
+  error : Say which checkpoint to probe: condor_submit src/probe.sub EXPERIMENT=<name> CKPT=<path>
+endif
+
+executable = src/wrapper_eval.sh
+arguments  = "$(CKPT) experiment=$(EXPERIMENT) $(ARGS:)"
+
+# --- Logs ---
+output = logs/condor_logs/probe_$(ClusterId).out
+error  = logs/condor_logs/probe_$(ClusterId).err
+log    = logs/condor_logs/probe_$(ClusterId).log
+
+# --- Run job as your CERN user (needed for EOS writes) ---
+run_as_owner = True
+
+# --- Batch flavour ---
++JobFlavour = "longlunch"
+
+# --- Environment ---
+# getenv = False: the job gets the environment set below and nothing else, so it
+# does not depend on the shell it was submitted from.
+getenv = False
+request_cpus = 6
+request_gpus = 1
+
+# EVAL_SCRIPT makes the evaluation wrapper run the probe instead of the test pass.
+# FM_TESTING_IMAGE and PROJECT_DIR as in src/eval.sub: where the .sif is, and the
+# repository root, which is where you submit from.
+environment = "OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 EVAL_SCRIPT=src/eval_probes.py FM_TESTING_IMAGE=$ENV(FM_TESTING_IMAGE:) PROJECT_DIR=$ENV(PWD)"
+
+queue

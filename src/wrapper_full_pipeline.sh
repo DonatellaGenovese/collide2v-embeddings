@@ -30,6 +30,12 @@ if [ ! -f "${PROJECT_DIR}/src/train.py" ]; then
 fi
 cd "${PROJECT_DIR}"
 
+if [ ! -f "${IMAGE}" ]; then
+    echo "[wrapper] no container image at ${IMAGE}: set FM_TESTING_IMAGE in the shell you" \
+         "submit from, as in section 2 of the README, and submit again" >&2
+    exit 1
+fi
+
 # --- GPU ---
 # Decided by what the node has, which is what the submit file asked for, rather than
 # by composing the config, which would need hydra outside the container.

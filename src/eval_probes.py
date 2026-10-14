@@ -9,12 +9,16 @@ representation.
     python src/eval_probes.py experiment=<name> model=simclr \\
         ckpt_path=logs/train/runs/<date>/checkpoints/<file>.ckpt
 
-It writes `probe_results.json` into the run directory and prints a table. Compare the
-number against a classifier trained end to end on the same data, `model=tinyTransformer`:
-a probe that matches it means the embedding kept what the task needs.
+`experiment` and `model` have to be those of the training run, since the encoder is
+rebuilt from them before the weights are loaded. It prints a table and writes
+`probe_results.json` into a new run directory, `<log_dir>/eval/runs/<date>_<time>/`,
+not into the training run's. Compare the number against a classifier trained end to
+end on the same data, `model=tinyTransformer`: a probe that matches it means the
+embedding kept what the task needs.
 
-The embeddings themselves are written next to the results when `--save-embeddings` is
-passed, which is what a UMAP plot or an anomaly-detection study starts from.
+The embeddings themselves are written next to the results, as `embeddings.pt`, with
+`+probe.save_embeddings=true`, which is what a UMAP plot or an anomaly-detection study
+starts from.
 """
 
 import json
@@ -140,6 +144,13 @@ def main(cfg: DictConfig) -> None:
         raise ValueError("Pass the checkpoint to probe: ckpt_path=<path to .ckpt>")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cpu":
+        # It still works, but passing every event through the encoder is several times
+        # slower: for fm_testing_binary, about 11 minutes on CPU against 2 on a GPU.
+        log.warning("No GPU visible to PyTorch: the probe runs on CPU, which is slow. "
+                    "On lxplus use lxplus-gpu.cern.ch with apptainer --nv, or src/probe.sub.")
+    else:
+        log.info(f"Running on {torch.cuda.get_device_name(0)}")
     probe_cfg = cfg.get("probe", {})
     train_limit = probe_cfg.get("train_events", 100_000)
 
