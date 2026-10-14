@@ -558,21 +558,40 @@ try, on a new `label` and against the numbers you already have.
 
 ### 6.3 Measuring an embedding
 
-A contrastive run has no accuracy of its own, so a falling loss says nothing about
-whether the embedding is useful. Freeze the encoder, fit a linear classifier on its
-output, and see how far that gets:
+A contrastive run has no accuracy of its own, so a falling loss says nothing about whether the embedding is useful. Freeze the encoder, fit a linear classifier on its output, and see how far that gets. Linear on purpose: anything stronger measures the probe instead of the representation.
+
+The probe rebuilds the encoder from `experiment` and `model` before loading the weights, so both have to be the ones the checkpoint was trained with; `model` can be left out when it is the experiment's default. Like training, it runs on a GPU: it passes every event through the encoder, which on a CPU takes several times longer (for `fm_testing_binary`, about 11 minutes against 2), and it warns in its log when it finds no GPU.
+
+**On lxplus, interactively**, on `lxplus-gpu.cern.ch`, inside the container with `--nv`:
 
 ```bash
-python src/eval_probes.py experiment=<name> model=simclr \
-    ckpt_path=logs/train/runs/<date>/checkpoints/<file>.ckpt
+apptainer exec --nv --bind /eos:/eos --bind /afs:/afs --bind /run/user/$(id -u) $FM_TESTING_IMAGE \
+    python src/eval_probes.py experiment=<name> model=simclr \
+    ckpt_path=<log_dir>/train/runs/<date>_<time>/checkpoints/last.ckpt
 ```
 
-It works on every model in the repository, classifiers included, so a probe on
-`tinyTransformer`'s embedding can be set next to one on SimCLR's. It writes
-`probe_results.json` with accuracy and AUROC per split. Linear on purpose:
-anything stronger measures the probe instead of the representation. The number to
-compare against is a `tinyTransformer` trained end to end on the same data — a probe that
-matches it means the embedding kept what the task needs.
+**On lxplus, on HTCondor**, from the repository root, outside the container. The job asks for one GPU:
+
+```bash
+condor_submit src/probe.sub EXPERIMENT=<name> ARGS="model=simclr" \
+    CKPT=<log_dir>/train/runs/<date>_<time>/checkpoints/last.ckpt
+```
+
+The job's output goes to `logs/condor_logs/probe_<cluster>.out`.
+
+**Off lxplus, with files from Hugging Face**, on a machine with a GPU that PyTorch can see (section 2), with the `label` and event counts the dataset was built with:
+
+```bash
+python src/eval_probes.py experiment=fm_testing_binary model=simclr \
+    data.label=hf_binary 'data.train_val_test_split_per_class=[8000, 8000, 8000]' \
+    ckpt_path=<log_dir>/train/runs/<date>_<time>/checkpoints/last.ckpt
+```
+
+Each run prints accuracy and AUROC per split and writes them to `probe_results.json` in a new directory, `<log_dir>/eval/runs/<date>_<time>/`, not in the training run's. Add `+probe.save_embeddings=true` to keep the embeddings too, as `embeddings.pt` next to it: that is what a UMAP plot or an anomaly-detection study starts from.
+
+It works on every model in the repository, classifiers included, so a probe on `tinyTransformer`'s embedding can be set next to one on SimCLR's. The number to compare against is a `tinyTransformer` trained end to end on the same data: a probe that matches it means the embedding kept what the task needs.
+
+
 
 ### 6.4 Adding a model
 
@@ -605,8 +624,7 @@ python src/train.py experiment=fm_testing_binary model=my_model \
     +trainer.limit_train_batches=5 +trainer.limit_val_batches=2
 ```
 
-`tests/test_contrastive.py` checks that contract on both the template and the contrastive
-module, so if you break it the suite says so.
+`tests/test_contrastive.py` checks that contract on both the template and the contrastive module, so if you break it the suite says so.
 
 ### 6.5 Adding an augmentation
 
