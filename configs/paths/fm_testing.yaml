@@ -12,15 +12,9 @@ dataset_dir: ${oc.env:COLLIDE_DATASET_DIR,/eos/project/f/foundational-model-data
 # moved to `eos_data_dir`. On a batch node this should be local disk.
 tmp_data_dir: ${oc.env:COLLIDE_TMP_DIR,${paths.root_dir}/data/tmp}
 
-# Where the .npy shards end up and are read from during training. The name is
-# historical: it does not have to be on EOS, and off lxplus it is simply a directory.
-#
-# Both default under the repository so that a small dataset works with no setup, and
-# `data/` is already in .gitignore. A real dataset is hundreds of gigabytes and does
-# not belong there: give it somewhere with room, either through these environment
-# variables or, better, in configs/local/default.yaml, which Hydra loads if it exists
-# and Git ignores. On lxplus that means /eos/user/<letter>/<user>/... , not an AFS
-# home directory with a 10 GB quota.
+# Where the .npy shards are written and read by training (any directory, despite the
+# name). Set it in configs/local/default.yaml; otherwise COLLIDE_DATA_DIR, otherwise
+# data/ in the repository. On lxplus use /eos/user/<l>/<username>/, not the AFS home.
 eos_data_dir: ${oc.env:COLLIDE_DATA_DIR,${paths.root_dir}/data}
 
 # path to logging directory

@@ -30,8 +30,24 @@ base_temperature: 0.07
 # Two views per event. More views means a larger effective batch and more memory.
 num_views: 2
 
-# masking drops slots of the event; physics applies a phi rotation, an eta boost and pT
-# smearing, and needs norm_stats.json, so it only works on preprocessed data.
+# How the two views of an event are made different. Two choices:
+#
+#   masking   RandomMaskingAugmentation, src/models/components/contrastive.py: sets
+#             parts of the event to zero, as a detector that misses something would.
+#               mask_probability     chance of dropping each slot, or each object
+#               mask_full_particle   false drops single features, true whole objects
+#
+#   physics   PhysicsAugmentation, src/data/augmentations.py: transformations the
+#             physics does not change, all three applied together:
+#               phi_rotation   every object rotated by the same random angle in phi
+#               eta_boost      every eta shifted by the same amount, ~ N(0, eta_sigma)
+#               pt_smearing    pT smeared by a resolution, pt_sigma in log1p(pT) units
+#             It acts on the normalised vectors and reads norm_stats.json to turn a
+#             shift in physical units into one in normalised units, so it works only
+#             on preprocessed data. The three cannot be switched off one by one
+#             from here: the class has a flag for each, which the model does not pass.
+#
+# Empty slots stay empty in both: padding is never turned into an object.
 augmentation: masking
 mask_probability: 0.2
 mask_full_particle: false

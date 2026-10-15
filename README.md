@@ -98,7 +98,17 @@ apptainer exec --bind /eos:/eos --bind /afs:/afs --bind /run/user/$(id -u) $FM_T
     bash -c 'python -c "import torch, lightning, hydra" && ls /eos/project/f/foundational-model-dataset/samples/production_final > /dev/null && echo ok'
 ```
 
-`<username>` is your CERN login and `<l>` its first letter. `export` lasts only as long as the shell, so put the `FM_TESTING_IMAGE` line in your `~/.bashrc`, or repeat it in each new terminal. Check with `echo $FM_TESTING_IMAGE` before building: a stale value fails only at the very end, after the whole installation.
+`<username>` is your CERN login and `<l>` its first letter.
+
+**Make `FM_TESTING_IMAGE` permanent.** Every command that uses the container reads it, and so does every batch job: a job gets the path from the terminal you submit it from, which passes it nothing else of its environment. `export` lasts only as long as that terminal, so add it to your `~/.bashrc` once, and every new terminal has it:
+
+```bash
+echo 'export FM_TESTING_IMAGE=/eos/user/<l>/<username>/fm_testing.sif' >> ~/.bashrc
+source ~/.bashrc
+echo $FM_TESTING_IMAGE        # the path, not an empty line
+```
+
+A job submitted without it stops at once, with `no container image at …` in its `.err`. Check the value before building, too: a mistyped path fails only at the very end, after the whole installation.
 
 The three binds are all needed. The container sees neither `/eos` nor `/afs` unless they are bound, and EOS lets you in only with your Kerberos ticket, which lxplus keeps in `/run/user/<your uid>`: without that bind every read from EOS fails with `Permission denied`. The check above reads EOS for that reason; an import alone would pass.
 
@@ -337,7 +347,7 @@ condor_q                                                         # wait until em
 python scripts/submit_preprocessing_jobs.py experiment=<name>    # fits the statistics, then submits
 ```
 
-Preprocessing needs every vectorisation job to be finished. Put every setting in the experiment file: the jobs receive `experiment=` and nothing else, so an override such as `data.label=...` on the command line would not reach them. `FM_TESTING_IMAGE` does reach them, so the image can stay on EOS. Logs, submit files and per-job manifests land in `logs/condor_logs/`.
+Preprocessing needs every vectorisation job to be finished. Put every setting in the experiment file: the jobs receive `experiment=` and nothing else, so an override such as `data.label=...` on the command line would not reach them. `FM_TESTING_IMAGE` reaches them from your terminal, so it has to be set there (section 2); the submit scripts refuse to submit when it points nowhere. Logs, submit files and per-job manifests land in `logs/condor_logs/`.
 
 **Off lxplus, with files from Hugging Face** (section 3), the same command as the first, without the container, and with fewer events, since three files per class hold about 25k:
 
@@ -473,7 +483,7 @@ apptainer exec --nv --bind /eos:/eos --bind /afs:/afs --bind /run/user/$(id -u) 
     trainer.max_epochs=1 +trainer.limit_train_batches=5 +trainer.limit_val_batches=2
 ```
 
-**On lxplus, on HTCondor**, from the repository root, **outside the container**, with `FM_TESTING_IMAGE` set as in section 2. The job starts the container itself.
+**On lxplus, on HTCondor**, from the repository root, **outside the container**, with `FM_TESTING_IMAGE` set in that terminal (section 2: it belongs in your `~/.bashrc`). Without it the job waits in the queue and then stops at once, saying so in its `.err`. The job starts the container itself.
 
 ```bash
 mkdir -p logs/condor_logs                                    # once: HTCondor does not create it
