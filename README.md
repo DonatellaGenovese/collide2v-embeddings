@@ -84,33 +84,29 @@ cd /afs/cern.ch/user/<l>/<username>
 git clone https://github.com/DonatellaGenovese/collide2v-embeddings.git
 cd collide2v-embeddings
 
-# 2. Build the container. It installs everything in requirements.txt.
+# 2. Say where the container image will be, for every terminal from now on. Batch
+#    jobs read it from the terminal you submit from, so it goes in ~/.bashrc, not
+#    only in this shell.
+echo 'export FM_TESTING_IMAGE=/eos/user/<l>/<username>/fm_testing.sif' >> ~/.bashrc
+source ~/.bashrc
+echo $FM_TESTING_IMAGE        # the path, not an empty line: check it before building
+
+# 3. Build the container. It installs everything in requirements.txt.
 #    Expect about half an hour and a .sif file of about 7 GB, which does not fit in
 #    your AFS home (10 GB quota). Put it on your EOS area, and the build cache on
 #    the node's local /tmp. Apptainer does not create the cache directory itself.
 export APPTAINER_CACHEDIR=/tmp/<username>/.apptainer
-export FM_TESTING_IMAGE=/eos/user/<l>/<username>/fm_testing.sif
 mkdir -p $APPTAINER_CACHEDIR
 apptainer build $FM_TESTING_IMAGE fm_testing.def
 
-# 3. Check that it works: the packages import, and EOS can be read from inside.
+# 4. Check that it works: the packages import, and EOS can be read from inside.
 apptainer exec --bind /eos:/eos --bind /afs:/afs --bind /run/user/$(id -u) $FM_TESTING_IMAGE \
     bash -c 'python -c "import torch, lightning, hydra" && ls /eos/project/f/foundational-model-dataset/samples/production_final > /dev/null && echo ok'
 ```
 
-`<username>` is your CERN login and `<l>` its first letter.
-
-**Make `FM_TESTING_IMAGE` permanent.** Every command that uses the container reads it, and so does every batch job: a job gets the path from the terminal you submit it from, which passes it nothing else of its environment. `export` lasts only as long as that terminal, so add it to your `~/.bashrc` once, and every new terminal has it:
-
-```bash
-echo 'export FM_TESTING_IMAGE=/eos/user/<l>/<username>/fm_testing.sif' >> ~/.bashrc
-source ~/.bashrc
-echo $FM_TESTING_IMAGE        # the path, not an empty line
-```
-
-A job submitted without it stops at once, with `no container image at …` in its `.err`. Check the value before building, too: a mistyped path fails only at the very end, after the whole installation.
-
 The three binds are all needed. The container sees neither `/eos` nor `/afs` unless they are bound, and EOS lets you in only with your Kerberos ticket, which lxplus keeps in `/run/user/<your uid>`: without that bind every read from EOS fails with `Permission denied`. The check above reads EOS for that reason; an import alone would pass.
+
+`<username>` is your CERN login and `<l>` its first letter. Step 2 matters beyond the build: every command that uses the container reads `FM_TESTING_IMAGE`, and a batch job submitted from a terminal without it waits in the queue and then stops at once, with `no container image at …` in its `.err`. A mistyped path fails the build only at the very end, after the whole installation, which is why step 2 prints it.
 
 From then on, on lxplus, every command in this README that starts with `python` runs inside the container, from the repository root:
 
